@@ -96,7 +96,7 @@ export const eventInfo = {
    * Зөвхөн эдгээр домэйнтэй сургуулийн (Outlook) майлаар нэвтэрнэ.
    */
   auth: {
-    allowedDomains: ["ufe.edu.mn", "ufenu.edu.mn"],
+    allowedDomains: ["ufe.edu.mn"],
     emailPlaceholder: "b********@ufe.edu.mn",
     /** Баталгаажуулах холбоос хэдэн минут хүчинтэй байх */
     linkTtlMinutes: 15,

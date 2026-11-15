@@ -139,7 +139,7 @@ ufe-new-year-2027/
 
 **Домэйн өөрчлөх:** `data/event.ts` →
 ```ts
-auth: { allowedDomains: ["ufe.edu.mn", "ufenu.edu.mn"], ... }
+auth: { allowedDomains: ["ufe.edu.mn"], ... }
 ```
 
 ---

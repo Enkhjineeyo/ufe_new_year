@@ -27,8 +27,12 @@ export default function LoginForm({ placeholder, domains, initialError }: LoginF
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email }),
       });
-      const data = await res.json();
-      if (!res.ok) setState({ step: "form", error: data.error ?? "Алдаа гарлаа." });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok)
+        setState({
+          step: "form",
+          error: data.error ?? `Серверийн алдаа (${res.status}). Тохиргоог /api/health хаягаар шалгана уу.`,
+        });
       else setState({ step: "sent", sentTo: data.sentTo, devLink: data.devLink });
     } catch {
       setState({ step: "form", error: "Сүлжээний алдаа. Дахин оролдоно уу." });
