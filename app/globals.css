@@ -1,0 +1,90 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --night: #08090d;
+  --ink: #11141b;
+  --silver: #c7ccd5;
+  --electric: #536dff;
+}
+
+html {
+  scroll-behavior: smooth;
+  scroll-padding-top: 5rem;
+  background: var(--night);
+  color-scheme: dark;
+}
+
+body {
+  background: var(--night);
+  color: #fff;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: rgba(83, 109, 255, 0.45);
+  color: #fff;
+}
+
+@layer components {
+  /* Chrome / metallic текст */
+  .chrome-text {
+    background-image: linear-gradient(
+      100deg,
+      #8a909c 0%,
+      #ffffff 18%,
+      #c7ccd5 32%,
+      #6d7380 46%,
+      #f4f6fa 60%,
+      #aab1be 76%,
+      #ffffff 90%,
+      #8a909c 100%
+    );
+    background-size: 200% auto;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    filter: drop-shadow(0 0 24px rgba(83, 109, 255, 0.25));
+  }
+
+  .glass {
+    background: linear-gradient(
+      160deg,
+      rgba(255, 255, 255, 0.07),
+      rgba(255, 255, 255, 0.015)
+    );
+    border: 1px solid rgba(199, 204, 213, 0.14);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+  }
+
+  .eyebrow {
+    @apply font-display text-[0.68rem] font-medium uppercase tracking-[0.32em] text-silver/70;
+  }
+
+  .hairline {
+    background: linear-gradient(
+      90deg,
+      transparent,
+      rgba(199, 204, 213, 0.45),
+      transparent
+    );
+  }
+}
+
+/* Хөдөлгөөн багасгах тохиргоотой хэрэглэгчид */
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
