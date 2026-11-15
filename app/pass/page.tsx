@@ -55,6 +55,12 @@ export default async function PassPage() {
           </dl>
         </article>
 
+        <a
+          href="/#lost-found"
+          className="mt-6 flex items-center justify-center rounded-full border border-electric/50 bg-electric/15 px-6 py-3.5 font-display text-[0.65rem] font-semibold tracking-[0.2em] text-white transition-colors hover:bg-electric"
+        >
+          ХАЯСАН ГЭЭСЭН ЗҮЙЛС →
+        </a>
         <form action="/api/auth/logout" method="post" className="mt-6 text-center">
           <button type="submit" className="inline-flex items-center gap-2 text-xs font-semibold tracking-[0.2em] text-silver/70 hover:text-white">
             <LogOut className="h-4 w-4" aria-hidden="true" /> ГАРАХ

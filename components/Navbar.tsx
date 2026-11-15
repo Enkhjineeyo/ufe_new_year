@@ -37,7 +37,7 @@ export default function Navbar() {
           </span>
         </a>
 
-        <ul className="hidden items-center gap-8 md:flex">
+        <ul className="hidden items-center gap-6 xl:flex xl:gap-8">
           {siteConfig.nav.map((item) => (
             <li key={item.href}>
               <a
@@ -60,7 +60,7 @@ export default function Navbar() {
         </a>
         <button
           type="button"
-          className="grid h-10 w-10 place-items-center rounded-full text-white md:hidden"
+          className="grid h-10 w-10 place-items-center rounded-full text-white xl:hidden"
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
           aria-controls="mobile-menu"
@@ -72,7 +72,7 @@ export default function Navbar() {
       </nav>
 
       {open && (
-        <div id="mobile-menu" className="h-[calc(100dvh-4rem)] bg-night/95 px-6 pt-10 md:hidden">
+        <div id="mobile-menu" className="h-[calc(100dvh-4rem)] bg-night/95 px-6 pt-10 xl:hidden">
           <ul className="flex flex-col gap-7">
             {siteConfig.nav.map((item) => (
               <li key={item.href}>

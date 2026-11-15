@@ -55,6 +55,42 @@ export const eventInfo = {
     facebook: "https://www.facebook.com/",
   },
 
+  /** ҮДШИЙН ЗАГВАР (moodboard) — зургууд public/images/ дотор */
+  theme: {
+    name: "MIDNIGHT IN MOTION",
+    tagline: "Where the Night Comes Alive.",
+    vibe: "Modern, energetic, stylish.",
+    colors: [
+      { name: "Navy", hex: "#0E1A4F" },
+      { name: "Electric Blue", hex: "#536DFF" },
+      { name: "Chrome", hex: "#C7CCD5", chrome: true },
+    ],
+    dressCode: ["Black", "Blue", "Metallic"],
+    images: [
+      { src: "/images/moodboard-1.jpg", alt: "Хөх хөшиг, мөнгөлөг мод бүхий танхимын чимэглэл" },
+      { src: "/images/moodboard-2.jpg", alt: "Хөх гэрэлтүүлэг, LED дэлгэцтэй тайз" },
+      { src: "/images/moodboard-3.jpg", alt: "Disco бөмбөг, мөнгөлөг унжлагатай хөх чимэглэл" },
+    ],
+  },
+
+  /** Танхимын бүдүүвч зургууд */
+  venueMaps: [
+    {
+      src: "/images/floor-plan.webp",
+      title: "ТАНХИМЫН БҮСЧЛЭЛ",
+      caption: "Тайз, бүжгийн талбай, LED дэлгэц, 2-р давхрын VIP ширээ, Photobooth болон орох хаалга.",
+      width: 2048,
+      height: 1601,
+    },
+    {
+      src: "/images/cloakroom.webp",
+      title: "ХУВЦАСНЫ ХАДГАЛАМЖ",
+      caption: "Орохдоо хувцсаа өгч, гарахдаа авах эгнээ тусдаа. Дугаартай өлгүүр болон түлхүүртэй локер.",
+      width: 1467,
+      height: 1076,
+    },
+  ],
+
   /**
    * НЭВТРЭХ ТОХИРГОО
    * Зөвхөн эдгээр домэйнтэй сургуулийн (Outlook) майлаар нэвтэрнэ.

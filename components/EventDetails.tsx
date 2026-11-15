@@ -1,4 +1,5 @@
-import { CalendarDays, Building2, MapPin, GraduationCap, Clock, ExternalLink, Map } from "lucide-react";
+import Image from "next/image";
+import { Maximize2, CalendarDays, Building2, MapPin, GraduationCap, Clock, ExternalLink, Map } from "lucide-react";
 import { siteConfig } from "@/site.config";
 import SectionHeading from "./SectionHeading";
 import Reveal from "./Reveal";
@@ -75,6 +76,34 @@ export default function EventDetails() {
               )}
             </div>
           </Reveal>
+        </div>
+
+        {/* Танхимын бүдүүвч */}
+        <div className="mt-6 grid gap-6 lg:grid-cols-2">
+          {siteConfig.venueMaps.map((m, i) => (
+            <Reveal key={m.src} delay={i * 0.08}>
+              <figure className="group overflow-hidden rounded-2xl border border-white/[0.08] bg-ink/70">
+                <a href={m.src} target="_blank" rel="noopener noreferrer" className="relative block" aria-label={`${m.title} — томоор харах`}>
+                  <Image
+                    src={m.src}
+                    alt={m.title}
+                    width={m.width}
+                    height={m.height}
+                    loading="lazy"
+                    sizes="(min-width: 1024px) 50vw, 100vw"
+                    className="h-auto w-full transition-transform duration-700 group-hover:scale-[1.02]"
+                  />
+                  <span className="absolute right-3 top-3 grid h-9 w-9 place-items-center rounded-full bg-night/70 text-white opacity-80 backdrop-blur transition-opacity group-hover:opacity-100">
+                    <Maximize2 className="h-4 w-4" aria-hidden="true" />
+                  </span>
+                </a>
+                <figcaption className="border-t border-white/[0.07] p-5">
+                  <p className="font-display text-sm font-semibold tracking-[0.18em] text-white">{m.title}</p>
+                  <p className="mt-1.5 text-sm text-silver/80">{m.caption}</p>
+                </figcaption>
+              </figure>
+            </Reveal>
+          ))}
         </div>
       </div>
     </section>
