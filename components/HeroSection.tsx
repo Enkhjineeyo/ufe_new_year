@@ -66,13 +66,21 @@ export default function HeroSection() {
           <CountdownTimer target={siteConfig.startsAt} startedMessage={siteConfig.startedMessage} />
         </div>
 
-        <a
-          href="#details"
-          className="group relative mt-12 inline-flex items-center gap-3 overflow-hidden whitespace-nowrap rounded-full border border-electric/60 bg-electric/15 px-7 py-4 font-display text-xs font-semibold tracking-[0.16em] sm:px-8 sm:tracking-[0.25em] text-white shadow-[0_0_40px_-8px_rgba(83,109,255,0.8)] transition-all duration-300 hover:bg-electric hover:shadow-[0_0_60px_-6px_rgba(83,109,255,1)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-electric sm:text-sm"
-        >
-          ҮДШИЙН ДЭЛГЭРЭНГҮЙ
-          <ChevronDown className="h-4 w-4 transition-transform group-hover:translate-y-0.5" aria-hidden="true" />
-        </a>
+        <div className="mt-12 flex flex-col items-center justify-center gap-3 sm:flex-row">
+          <a
+            href="#tickets"
+            className="inline-flex items-center gap-3 whitespace-nowrap rounded-full bg-white px-8 py-4 font-display text-xs font-semibold tracking-[0.16em] text-night shadow-[0_0_40px_-8px_rgba(255,255,255,0.6)] transition-all duration-300 hover:bg-silver sm:tracking-[0.25em] sm:text-sm"
+          >
+            ТАСАЛБАР АВАХ
+          </a>
+          <a
+            href="#details"
+            className="group relative inline-flex items-center gap-3 overflow-hidden whitespace-nowrap rounded-full border border-electric/60 bg-electric/15 px-7 py-4 font-display text-xs font-semibold tracking-[0.16em] sm:px-8 sm:tracking-[0.25em] text-white shadow-[0_0_40px_-8px_rgba(83,109,255,0.8)] transition-all duration-300 hover:bg-electric hover:shadow-[0_0_60px_-6px_rgba(83,109,255,1)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-electric sm:text-sm"
+          >
+            ҮДШИЙН ДЭЛГЭРЭНГҮЙ
+            <ChevronDown className="h-4 w-4 transition-transform group-hover:translate-y-0.5" aria-hidden="true" />
+          </a>
+        </div>
       </div>
     </section>
   );

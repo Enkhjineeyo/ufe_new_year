@@ -17,6 +17,9 @@ export async function GET() {
       SMTP_PASS: has("SMTP_PASS"),
       MAIL_FROM: has("MAIL_FROM"),
       DATABASE_URL: has("DATABASE_URL") || has("POSTGRES_URL"),
+      QPAY: has("QPAY_USERNAME") && has("QPAY_PASSWORD") && has("QPAY_INVOICE_CODE"),
+      QPAY_BASE_URL: process.env.QPAY_BASE_URL ?? "https://merchant.qpay.mn (default)",
+      ADMIN_EMAILS: (process.env.ADMIN_EMAILS ?? "").split(",").filter((s) => s.trim()).length,
     },
     { headers: { "Cache-Control": "no-store" } },
   );

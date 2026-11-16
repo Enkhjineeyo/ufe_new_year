@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { COOLDOWN_COOKIE, getBaseUrl, maskEmail, normalizeAllowedEmail, signToken } from "@/lib/auth";
+import { COOLDOWN_COOKIE, getBaseUrl, maskEmail, normalizeAllowedEmail, safeNext, signToken } from "@/lib/auth";
 import { sendLoginLink } from "@/lib/mailer";
 import { siteConfig } from "@/site.config";
 
@@ -46,6 +46,7 @@ export async function POST(req: NextRequest) {
       email,
       purpose: "login",
       exp: Date.now() + siteConfig.auth.linkTtlMinutes * 60_000,
+      next: safeNext((body as { next?: unknown })?.next),
     });
     const link = `${getBaseUrl(req.nextUrl.origin)}/api/auth/verify?token=${encodeURIComponent(token)}`;
     const { devLink } = await sendLoginLink(email, link);

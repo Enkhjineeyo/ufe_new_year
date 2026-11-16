@@ -176,3 +176,36 @@ auth: { allowedDomains: ["ufe.edu.mn"], ... }
    `ginjin.jpg`, `becca.jpg`, `wasabies.jpg`, `fruitybaachka-bektor.jpg`, `morningstar.jpg`, `vande.jpg`, `gangaa.jpg`, `am-c.jpg`
 3. `data/artists.ts` дотор тус бүрийн `image: ""`-ийг `image: "/artists/ginjin.jpg"` гэх мэтээр солино.
 4. `git add . && git commit -m "Add artist photos" && git push`
+
+---
+
+## 8. Тасалбар борлуулалт (Early Bird / Regular / VIP)
+
+**Урсгал:** Оюутан @ufe.edu.mn майлаар нэвтэрнэ → ангиллаа сонгоно → QPay эсвэл дансаар төлнө → төлбөр баталгаажмагц **QR тасалбар** `/orders/<код>` болон `/pass` ("Миний тасалбар") хуудсанд гарна → хаалган дээр админ QR уншуулж **check-in** хийнэ.
+
+### Тохиргоо
+| Юуг | Хаана |
+|---|---|
+| Үнэ, тоо ширхэг, давуу тал, Early Bird дуусах огноо | `data/tickets.ts` → `tiers` (Early Bird 70,000₮ · Regular 80,000₮ · VIP 200,000₮, 240ш) |
+| Нэг оюутны авах тоо | `data/tickets.ts` → `maxPerStudent` |
+| Дансны мэдээлэл | `data/tickets.ts` → `bank` (дансны дугаар хоосон бол "Дансаар" сонголт идэвхгүй) |
+
+### Vercel Environment Variables
+| Нэр | Тайлбар |
+|---|---|
+| `DATABASE_URL` | **Заавал.** Vercel → Storage → Neon холбоход автоматаар нэмэгдэнэ |
+| `ADMIN_EMAILS` | Админуудын майл, таслалаар: `b23fa1251@ufe.edu.mn,b24xx0000@ufe.edu.mn` |
+| `QPAY_USERNAME` / `QPAY_PASSWORD` / `QPAY_INVOICE_CODE` | QPay merchant-аас авна (байхгүй бол QPay сонголт идэвхгүй) |
+| `QPAY_BASE_URL` | Туршилт: `https://merchant-sandbox.qpay.mn` · Бодит: `https://merchant.qpay.mn` (default) |
+
+### Хуудсууд
+- `/#tickets` — тасалбарын хэсэг · `/tickets/buy?tier=vip` — худалдан авах
+- `/orders/<UFE-XXXXXX>` — төлбөр / QR тасалбар · `/pass` — миний тасалбар
+- `/admin` — **админ**: борлуулалтын тоо, орлого, дансаар төлсөн захиалгыг баталгаажуулах, check-in
+- `/t/<код>` — тасалбарын QR уншуулахад нээгдэнэ (админ бол CHECK-IN товч гарна)
+
+### Аюулгүй байдал
+- QPay callback-д итгэхгүй — төлбөрийг QPay API-аас (`/v2/payment/check`) дахин шалгаж баталгаажуулна.
+- QR тасалбарыг зөвхөн эзэмшигч болон админ харна. Тасалбар нэг удаа л check-in хийгдэнэ.
+- Дансаар төлсөн захиалгыг админ банкны хуулгаас **гүйлгээний утга (UFE-XXXXXX) ба дүнг** тулгаж баталгаажуулна.
+- Локал туршилт: `.env.local`-д `QPAY_MOCK=1` бол QPay-г дуурайлгана (production дээр ажиллахгүй).

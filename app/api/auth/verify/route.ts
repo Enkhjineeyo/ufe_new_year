@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { SESSION_COOKIE, sessionCookieOptions, signToken, verifyToken } from "@/lib/auth";
+import { SESSION_COOKIE, safeNext, sessionCookieOptions, signToken, verifyToken } from "@/lib/auth";
 import { siteConfig } from "@/site.config";
 
 export const runtime = "nodejs";
@@ -12,7 +12,7 @@ export async function GET(req: NextRequest) {
   }
   const maxAge = siteConfig.auth.sessionDays * 86_400;
   const session = signToken({ email: payload.email, purpose: "session", exp: Date.now() + maxAge * 1000 });
-  const res = NextResponse.redirect(new URL("/pass", req.url));
+  const res = NextResponse.redirect(new URL(safeNext(payload.next) ?? "/pass", req.url));
   res.cookies.set(SESSION_COOKIE, session, sessionCookieOptions(maxAge));
   return res;
 }

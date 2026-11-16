@@ -7,13 +7,14 @@ interface LoginFormProps {
   placeholder: string;
   domains: string[];
   initialError?: string;
+  next?: string;
 }
 
 type State =
   | { step: "form"; error?: string }
   | { step: "sent"; sentTo: string; devLink?: string };
 
-export default function LoginForm({ placeholder, domains, initialError }: LoginFormProps) {
+export default function LoginForm({ placeholder, domains, initialError, next }: LoginFormProps) {
   const [email, setEmail] = useState("");
   const [loading, setLoading] = useState(false);
   const [state, setState] = useState<State>({ step: "form", error: initialError });
@@ -25,7 +26,7 @@ export default function LoginForm({ placeholder, domains, initialError }: LoginF
       const res = await fetch("/api/auth/request-link", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({ email, next }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok)

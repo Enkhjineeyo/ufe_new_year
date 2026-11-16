@@ -6,6 +6,10 @@ import AuthShell from "@/components/AuthShell";
 import PaperStar from "@/components/PaperStar";
 import { getSessionEmail } from "@/lib/session";
 import { siteConfig } from "@/site.config";
+import TicketCard from "@/components/tickets/TicketCard";
+import { ticketStore } from "@/lib/tickets-db";
+import { orderDTO, syncQpay } from "@/lib/tickets";
+import { formatMNT } from "@/data/tickets";
 
 export const metadata: Metadata = {
   title: `Миний урилга — ${siteConfig.title}`,
@@ -15,6 +19,14 @@ export const metadata: Metadata = {
 export default async function PassPage() {
   const email = await getSessionEmail();
   if (!email) redirect("/login");
+  let orders: ReturnType<typeof orderDTO>[] = [];
+  try {
+    orders = (await Promise.all((await ticketStore().listByEmail(email)).map(syncQpay))).map(orderDTO);
+  } catch (e) {
+    console.error(e);
+  }
+  const paid = orders.filter((o) => o.status === "paid" && o.ticketCode);
+  const pending = orders.filter((o) => o.status === "pending");
 
   return (
     <>
@@ -54,6 +66,26 @@ export default async function PassPage() {
             ))}
           </dl>
         </article>
+
+        <section className="mt-10" aria-labelledby="my-tickets">
+          <h2 id="my-tickets" className="mb-4 text-center font-display text-xs font-semibold tracking-[0.3em] text-silver/70">МИНИЙ ТАСАЛБАР</h2>
+          {paid.map((o) => (
+            <div key={o.ref} className="mb-6">
+              <TicketCard tierName={o.tierName} holder={o.holder} ref_={o.ref} ticketCode={o.ticketCode!} checkedInAt={o.checkedInAt} />
+            </div>
+          ))}
+          {pending.map((o) => (
+            <a key={o.ref} href={`/orders/${o.ref}`} className="mb-3 flex items-center justify-between rounded-2xl border border-amber-400/30 bg-amber-400/10 p-4 text-sm">
+              <span className="text-white">{o.tierName} · {formatMNT(o.amount)} <span className="ml-1 font-mono text-xs text-silver/70">{o.ref}</span></span>
+              <span className="text-xs font-semibold text-amber-300">Төлбөр хүлээгдэж буй →</span>
+            </a>
+          ))}
+          {paid.length === 0 && pending.length === 0 && (
+            <a href="/#tickets" className="flex items-center justify-center rounded-full bg-electric px-6 py-3.5 font-display text-[0.65rem] font-semibold tracking-[0.2em] text-white">
+              ТАСАЛБАР АВАХ →
+            </a>
+          )}
+        </section>
 
         <a
           href="/#lost-found"

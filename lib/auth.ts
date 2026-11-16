@@ -12,7 +12,12 @@ import { siteConfig } from "@/site.config";
 export const SESSION_COOKIE = "ufe_session";
 export const COOLDOWN_COOKIE = "ufe_link_sent";
 
-type TokenPayload = { email: string; purpose: "login" | "session"; exp: number };
+type TokenPayload = { email: string; purpose: "login" | "session"; exp: number; next?: string };
+
+/** Нэвтэрсний дараа очих дотоод зам (жш: /tickets/buy?tier=vip) — гадны холбоос зөвшөөрөхгүй */
+export function safeNext(v: unknown): string | undefined {
+  return typeof v === "string" && /^\/(?!\/)[\w\-/?=&.%#]*$/.test(v) && v.length < 200 ? v : undefined;
+}
 
 function getSecret(): string {
   const secret = process.env.AUTH_SECRET;

@@ -18,6 +18,7 @@ export const siteConfig = {
     { label: "Үдэш", href: "/#about" },
     { label: "Theme", href: "/#theme" },
     { label: "Artists", href: "/#artists" },
+    { label: "Tickets", href: "/#tickets" },
     { label: "Details", href: "/#details" },
     { label: "Lost & Found", href: "/#lost-found" },
     { label: "Partners", href: "/#partners" },

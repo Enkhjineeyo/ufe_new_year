@@ -1,13 +1,21 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Menu, X, LogIn } from "lucide-react";
+import { Menu, X, LogIn, Ticket } from "lucide-react";
 import { siteConfig } from "@/site.config";
 import PaperStar from "./PaperStar";
 
 export default function Navbar() {
   const [scrolled, setScrolled] = useState(false);
   const [open, setOpen] = useState(false);
+  const [loggedIn, setLoggedIn] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/auth/me", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((d: { loggedIn?: boolean }) => setLoggedIn(Boolean(d.loggedIn)))
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 24);
@@ -52,11 +60,11 @@ export default function Navbar() {
 
         <div className="flex items-center gap-2">
         <a
-          href="/login"
-          className="inline-flex items-center gap-2 rounded-full border border-electric/50 bg-electric/15 px-4 py-2 text-[0.65rem] font-semibold tracking-[0.18em] text-white transition-colors hover:bg-electric"
+          href={loggedIn ? "/pass" : "/login"}
+          className="inline-flex items-center gap-2 whitespace-nowrap rounded-full border border-electric/50 bg-electric/15 px-4 py-2 text-[0.65rem] font-semibold tracking-[0.18em] text-white transition-colors hover:bg-electric"
         >
-          <LogIn className="h-3.5 w-3.5" aria-hidden="true" />
-          НЭВТРЭХ
+          {loggedIn ? <Ticket className="h-3.5 w-3.5" aria-hidden="true" /> : <LogIn className="h-3.5 w-3.5" aria-hidden="true" />}
+          {loggedIn ? "МИНИЙ ТАСАЛБАР" : "НЭВТРЭХ"}
         </a>
         <button
           type="button"

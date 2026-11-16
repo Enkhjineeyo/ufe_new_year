@@ -4,6 +4,7 @@ import Navbar from "@/components/Navbar";
 import AuthShell from "@/components/AuthShell";
 import LoginForm from "@/components/LoginForm";
 import { getSessionEmail } from "@/lib/session";
+import { safeNext } from "@/lib/auth";
 import { siteConfig } from "@/site.config";
 
 export const metadata: Metadata = {
@@ -14,10 +15,11 @@ export const metadata: Metadata = {
 export default async function LoginPage({
   searchParams,
 }: {
-  searchParams: Promise<{ error?: string }>;
+  searchParams: Promise<{ error?: string; next?: string }>;
 }) {
-  if (await getSessionEmail()) redirect("/pass");
-  const { error } = await searchParams;
+  const { error, next: rawNext } = await searchParams;
+  const next = safeNext(rawNext);
+  if (await getSessionEmail()) redirect(next ?? "/pass");
 
   return (
     <>
@@ -34,6 +36,7 @@ export default async function LoginPage({
           <LoginForm
             placeholder={siteConfig.auth.emailPlaceholder}
             domains={siteConfig.auth.allowedDomains}
+            next={next}
             initialError={error === "expired" ? "Холбоосын хугацаа дууссан эсвэл буруу байна. Дахин авна уу." : undefined}
           />
         </div>
