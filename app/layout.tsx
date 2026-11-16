@@ -11,7 +11,7 @@ const siteUrl =
     : undefined);
 
 const description =
-  "СЭЗИС-ийн оюутнуудад зориулсан шинэ жилийн үдэшлэг — 2026.12.20, Corporate Convention Centre. Live performance, DJ set, finger foods, special surprises.";
+  "СЭЗИС-ийн оюутнуудад зориулсан шинэ жилийн үдэшлэг — 2026.12.19, Corporate Convention Centre. Live performance, DJ set, finger foods, special surprises.";
 
 export const metadata: Metadata = {
   metadataBase: siteUrl ? new URL(siteUrl) : undefined,

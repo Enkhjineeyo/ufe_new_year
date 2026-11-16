@@ -1,6 +1,6 @@
 # СЭЗИС NEW YEAR 2027 — Landing Page
 
-**THE NIGHT TO REMEMBER.** · 20.12.2026 · Corporate Convention Centre
+**THE NIGHT TO REMEMBER.** · 19.12.2026 · Corporate Convention Centre
 
 Next.js 16 (App Router) · React 19 · TypeScript · Tailwind CSS · Framer Motion · Lucide icons
 
@@ -158,7 +158,7 @@ auth: { allowedDomains: ["ufe.edu.mn"], ... }
 
 | Юуг | Хаана |
 |---|---|
-| Огноо, цаг (countdown) | `data/event.ts` → `startsAt: "2026-12-20T19:00:00+08:00"` |
+| Огноо, цаг (countdown) | `data/event.ts` → `startsAt: "2026-12-19T18:00:00+08:00"` |
 | Байршил, Google Maps | `data/event.ts` → `mapUrl`, `mapEmbedUrl` |
 | Instagram / Facebook | `data/event.ts` → `socials` |
 | Theme (Midnight in Motion), dress code | `data/event.ts` → `theme` |

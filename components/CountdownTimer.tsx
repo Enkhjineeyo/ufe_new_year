@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { Sparkles } from "lucide-react";
 
 interface CountdownTimerProps {
-  /** ISO огноо, цагийн бүстэй: "2026-12-20T19:00:00+08:00" */
+  /** ISO огноо, цагийн бүстэй: "2026-12-19T18:00:00+08:00" */
   target: string;
   startedMessage: string;
 }
@@ -32,7 +32,7 @@ export default function CountdownTimer({ target, startedMessage }: CountdownTime
 
   useEffect(() => {
     // Date.parse нь "+08:00" офсетийг уншдаг тул зочны цагийн бүсээс үл хамааран
-    // Монголын цагаар 19:00 яг тооцогдоно.
+    // Монголын цагаар яг тооцогдоно.
     const targetMs = Date.parse(target);
     setParts(getParts(targetMs));
     setMounted(true);

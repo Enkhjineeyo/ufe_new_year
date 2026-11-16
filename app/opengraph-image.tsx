@@ -31,7 +31,7 @@ export default function OpengraphImage() {
           THE NIGHT TO REMEMBER.
         </div>
         <div style={{ fontSize: 28, letterSpacing: 6, color: "#536DFF", marginTop: 40 }}>
-          20 DECEMBER 2026 · CORPORATE CONVENTION CENTRE
+          19 DECEMBER 2026 · CORPORATE CONVENTION CENTRE
         </div>
       </div>
     ),

@@ -10,10 +10,10 @@ export const eventInfo = {
   universityEn: "University of Finance and Economics",
 
   /** Countdown зорилтот хугацаа — Монголын цаг (UTC+8) */
-  startsAt: "2026-12-20T19:00:00+08:00",
-  dateLabel: "20 DECEMBER 2026",
-  dateShort: "20.12.2026",
-  timeLabel: "19:00",
+  startsAt: "2026-12-19T18:00:00+08:00",
+  dateLabel: "19 DECEMBER 2026",
+  dateShort: "19.12.2026",
+  timeLabel: "18:00",
 
   venue: "Corporate Convention Centre",
   city: "Ulaanbaatar, Mongolia",
