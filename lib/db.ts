@@ -1,5 +1,6 @@
 import "server-only";
 import { neon } from "@neondatabase/serverless";
+import { databaseUrl } from "./database-url";
 
 /**
  * "Хаясан гээсэн зүйлс" өгөгдлийн сан.
@@ -54,7 +55,6 @@ interface Store {
   countRecent(table: "posts" | "comments", email: string, sinceMinutes: number): Promise<number>;
 }
 
-const databaseUrl = () => process.env.DATABASE_URL ?? process.env.POSTGRES_URL;
 
 /* ----------------------------- Postgres (Neon) ---------------------------- */
 

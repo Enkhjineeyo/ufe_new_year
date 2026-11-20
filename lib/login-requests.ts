@@ -1,5 +1,6 @@
 import "server-only";
 import { neon } from "@neondatabase/serverless";
+import { databaseUrl } from "./database-url";
 import { randomBytes } from "node:crypto";
 
 /**
@@ -17,7 +18,7 @@ const mem = globalThis as unknown as { __lr?: Map<string, Row> };
 const TTL_MS = 20 * 60_000;
 
 function sqlOrNull() {
-  const url = process.env.DATABASE_URL ?? process.env.POSTGRES_URL;
+  const url = databaseUrl();
   return url ? neon(url) : null;
 }
 let ready: Promise<unknown> | null = null;

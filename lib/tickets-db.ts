@@ -1,6 +1,7 @@
 import "server-only";
 import { neon } from "@neondatabase/serverless";
 import { randomBytes } from "node:crypto";
+import { databaseUrl } from "./database-url";
 
 /**
  * Тасалбарын захиалгын өгөгдлийн сан (Neon Postgres).
@@ -252,7 +253,7 @@ function memStore(): Store {
 let store: Store | null = null;
 export function ticketStore(): Store {
   if (store) return store;
-  const url = process.env.DATABASE_URL ?? process.env.POSTGRES_URL;
+  const url = databaseUrl();
   if (url) return (store = pgStore(url));
   if (process.env.NODE_ENV === "production") throw new Error("DATABASE_URL тохируулаагүй байна.");
   return (store = memStore());

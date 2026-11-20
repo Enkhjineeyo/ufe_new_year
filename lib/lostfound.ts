@@ -1,6 +1,7 @@
 import "server-only";
 import { NextResponse, type NextRequest } from "next/server";
 import type { CommentRow, PostKind, PostRow } from "./db";
+import { databaseUrl } from "./database-url";
 
 export const PAGE_SIZE = 5;
 export const LIMITS = {
@@ -91,7 +92,7 @@ export const jsonError = (error: string, status: number) => NextResponse.json({ 
 
 /** Өгөгдлийн сан холбогдоогүй үед ойлгомжтой алдаа (production) */
 export function dbMissing(): NextResponse | null {
-  if (process.env.NODE_ENV !== "production" || process.env.DATABASE_URL || process.env.POSTGRES_URL) return null;
+  if (process.env.NODE_ENV !== "production" || databaseUrl()) return null;
   return NextResponse.json(
     { error: "Өгөгдлийн сан холбогдоогүй байна. Зохион байгуулагч Vercel → Storage → Neon холбоно уу." },
     { status: 503 },

@@ -1,0 +1,1355 @@
+From 080570d04a75736a522a190e2a2aa5c860bda157 Mon Sep 17 00:00:00 2001
+From: Enkhjin <noreply@anthropic.com>
+Date: Fri, 20 Nov 2026 18:39:51 +0800
+Subject: [PATCH 1/2] Fix ticket overselling with locked order creation
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Th5rpw4bXAWXzufH6dWqda
+---
+ lib/tickets-db.ts | 49 +++++++++++++++++++++++++++++++++++++++++------
+ lib/tickets.ts    | 18 +++++++++++++++--
+ 2 files changed, 59 insertions(+), 8 deletions(-)
+
+diff --git a/lib/tickets-db.ts b/lib/tickets-db.ts
+index bb2972e..366e13a 100644
+--- a/lib/tickets-db.ts
++++ b/lib/tickets-db.ts
+@@ -35,8 +35,28 @@ export interface QpayFields {
+   urls: Order["qpayUrls"];
+ }
+ 
++export interface NewOrder {
++  email: string;
++  tier: string;
++  amount: number;
++  method: PayMethod;
++  expiresAt: Date;
++}
++
++/** Захиалга үүсгэх үеийн хязгаар: ангиллын нийт тоо, нэг оюутны авах тоо */
++export interface OrderLimits {
++  tierQuantity: number;
++  maxPerEmail: number;
++}
++
++/**
++ * "soldout" — ангилал дууссан, "limit" — оюутан эрхээ ашигласан.
++ * Шалгалт ба бичилт нэг transaction дотор хийгдэх тул зэрэг ирсэн хүсэлтүүд хэтрүүлж зарахгүй.
++ */
++export type CreateResult = Order | "soldout" | "limit";
++
+ interface Store {
+-  create(o: { email: string; tier: string; amount: number; method: PayMethod; expiresAt: Date }): Promise<Order>;
++  create(o: NewOrder, limits: OrderLimits): Promise<CreateResult>;
+   setQpay(ref: string, q: QpayFields): Promise<void>;
+   getByRef(ref: string): Promise<Order | null>;
+   getByTicket(code: string): Promise<Order | null>;
+@@ -55,6 +75,8 @@ const ALPH = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+ const rand = (n: number) => Array.from(randomBytes(n), (b) => ALPH[b % ALPH.length]).join("");
+ export const newRef = () => `UFE-${rand(6)}`;
+ const newTicketCode = () => rand(12);
++/** Захиалга үүсгэх transaction-уудыг дараалуулах түгжээний түлхүүр (дурын тогтмол тоо) */
++const ORDER_LOCK_KEY = 2027_1219;
+ 
+ /** Хугацаа дууссан pending захиалгыг "expired" гэж харуулна */
+ const effective = (o: Order): Order =>
+@@ -116,11 +138,23 @@ function pgStore(url: string): Store {
+   const ACTIVE = `(status = 'paid' OR (status = 'pending' AND expires_at > NOW()))`;
+ 
+   return {
+-    async create(o) {
++    async create(o, limits) {
+       await ensure();
+-      const rows = await sql`INSERT INTO tk_orders (ref, email, tier, amount, method, expires_at)
+-        VALUES (${newRef()}, ${o.email}, ${o.tier}, ${o.amount}, ${o.method}, ${o.expiresAt.toISOString()}) RETURNING *`;
+-      return row(rows[0] as Record<string, unknown>);
++      // Бүх захиалгыг дарааллаар нь оруулахын тулд transaction-ий түгжээ авна.
++      // Түгжээ авсны дараах INSERT бусад transaction-ий commit хийсэн мөрийг харж тоолно.
++      const [, inserted] = await sql.transaction((tx) => [
++        tx`SELECT pg_advisory_xact_lock(${ORDER_LOCK_KEY})`,
++        tx`INSERT INTO tk_orders (ref, email, tier, amount, method, expires_at)
++          SELECT ${newRef()}, ${o.email}, ${o.tier}, ${o.amount}, ${o.method}, ${o.expiresAt.toISOString()}
++          WHERE (SELECT COUNT(*) FROM tk_orders WHERE tier = ${o.tier}
++                   AND (status = 'paid' OR (status = 'pending' AND expires_at > NOW()))) < ${limits.tierQuantity}
++            AND (SELECT COUNT(*) FROM tk_orders WHERE email = ${o.email}
++                   AND (status = 'paid' OR (status = 'pending' AND expires_at > NOW()))) < ${limits.maxPerEmail}
++          RETURNING *`,
++      ]);
++      if (inserted[0]) return row(inserted[0] as Record<string, unknown>);
++      // Аль хязгаарт хүрснийг тодорхойлж хэрэглэгчид зөв мессеж өгнө
++      return (await this.countActiveForEmail(o.email)) >= limits.maxPerEmail ? "limit" : "soldout";
+     },
+     async setQpay(ref, q) {
+       await ensure();
+@@ -193,7 +227,10 @@ function memStore(): Store {
+   const find = (ref: string) => db.find((o) => o.ref === ref);
+   const active = (o: Order) => effective(o).status === "paid" || effective(o).status === "pending";
+   return {
+-    async create(o) {
++    async create(o, limits) {
++      // Node нэг thread-тэй, энд await байхгүй тул шалгалт ба бичилт салшгүй
++      if (db.filter((x) => x.email === o.email && active(x)).length >= limits.maxPerEmail) return "limit";
++      if (db.filter((x) => x.tier === o.tier && active(x)).length >= limits.tierQuantity) return "soldout";
+       const order: Order = {
+         ref: newRef(), email: o.email, tier: o.tier, amount: o.amount, method: o.method, status: "pending",
+         expiresAt: o.expiresAt.toISOString(), createdAt: new Date().toISOString(), paidAt: null, ticketCode: null,
+diff --git a/lib/tickets.ts b/lib/tickets.ts
+index d1184cf..1b819ac 100644
+--- a/lib/tickets.ts
++++ b/lib/tickets.ts
+@@ -57,7 +57,19 @@ export async function placeOrder(email: string, tierId: string, method: PayMetho
+   const expiresAt = new Date(
+     Date.now() + (method === "qpay" ? ticketConfig.qpayExpiryMinutes * 60_000 : ticketConfig.bankExpiryHours * 3_600_000),
+   );
+-  const order = await store.create({ email, tier: tier.id, amount: tier.price, method, expiresAt });
++  const created = await store.create(
++    { email, tier: tier.id, amount: tier.price, method, expiresAt },
++    { tierQuantity: tier.quantity, maxPerEmail: ticketConfig.maxPerStudent },
++  );
++  // Дээрх шалгалтын дараа өөр хүн сүүлийн тасалбарыг авсан байж болно
++  if (created === "soldout") throw new TicketError("Энэ ангиллын тасалбар дууссан.", 409);
++  if (created === "limit") {
++    throw new TicketError(
++      `Нэг оюутан ${ticketConfig.maxPerStudent} тасалбар авах эрхтэй. "Миний тасалбар" хэсгээс өмнөх захиалгаа шалгана уу.`,
++      409,
++    );
++  }
++  const order = created;
+ 
+   if (method === "qpay") {
+     try {
+@@ -80,7 +92,9 @@ export async function placeOrder(email: string, tierId: string, method: PayMetho
+ /** QPay захиалгын төлбөрийг шалгаад төлөгдсөн бол тасалбар гаргана */
+ export async function syncQpay(order: Order): Promise<Order> {
+   if (order.method !== "qpay" || !order.qpayInvoiceId) return order;
+-  if (order.status !== "pending" && order.status !== "expired") return order;
++  // Цуцалсан/хугацаа дууссан захиалгын QPay нэхэмжлэлийг хүн төлчихсөн байж болно.
++  // Мөнгө орсон бол тасалбар гаргана, эс бөгөөс төлсөн хүн тасалбаргүй үлдэнэ.
++  if (order.status === "paid") return order;
+   try {
+     if (await isInvoicePaid(order.qpayInvoiceId, order.amount)) {
+       return (await ticketStore().markPaid(order.ref, "qpay"))!;
+-- 
+2.43.0
+
+From 0283e0e5f07652cfd066626613405002b2c11c28 Mon Sep 17 00:00:00 2001
+From: Enkhjin <noreply@anthropic.com>
+Date: Fri, 20 Nov 2026 18:54:08 +0800
+Subject: [PATCH 2/2] Let students buy up to 2 guest tickets; move event to 20
+ Dec
+
+- One order holds the student's ticket plus up to 2 named guests
+- Each ticket gets its own QR (new tk_tickets table, auto-migrated)
+- Guest name and phone shown to admins at check-in
+- Event date 2026-12-20 18:00, Corporate Convention Centre
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Th5rpw4bXAWXzufH6dWqda
+---
+ README.md                             |  16 +-
+ app/api/admin/orders/route.ts         |  11 +-
+ app/api/tickets/order/route.ts        |   4 +-
+ app/api/tickets/qr/[code]/route.ts    |   4 +-
+ app/opengraph-image.tsx               |   2 +-
+ app/pass/page.tsx                     |  16 +-
+ app/t/[code]/page.tsx                 |  24 ++-
+ app/tickets/buy/page.tsx              |   4 +-
+ components/CountdownTimer.tsx         |   2 +-
+ components/tickets/AdminDashboard.tsx |  26 +++-
+ components/tickets/BuyForm.tsx        | 119 +++++++++++++-
+ components/tickets/OrderView.tsx      |  21 ++-
+ components/tickets/TicketCard.tsx     |  16 +-
+ components/tickets/TicketsSection.tsx |   2 +-
+ data/event.ts                         |   6 +-
+ data/tickets.ts                       |  32 +++-
+ lib/tickets-db.ts                     | 216 ++++++++++++++++++++------
+ lib/tickets.ts                        |  62 +++++---
+ 18 files changed, 461 insertions(+), 122 deletions(-)
+
+diff --git a/README.md b/README.md
+index 2f6add3..eb91210 100644
+--- a/README.md
++++ b/README.md
+@@ -1,6 +1,6 @@
+ # СЭЗИС NEW YEAR 2027 — Landing Page
+ 
+-**THE NIGHT TO REMEMBER.** · 19.12.2026 · Corporate Convention Centre
++**THE NIGHT TO REMEMBER.** · 20.12.2026 · Corporate Convention Centre
+ 
+ Next.js 16 (App Router) · React 19 · TypeScript · Tailwind CSS · Framer Motion · Lucide icons
+ 
+@@ -158,7 +158,7 @@ auth: { allowedDomains: ["ufe.edu.mn"], ... }
+ 
+ | Юуг | Хаана |
+ |---|---|
+-| Огноо, цаг (countdown) | `data/event.ts` → `startsAt: "2026-12-19T18:00:00+08:00"` |
++| Огноо, цаг (countdown) | `data/event.ts` → `startsAt: "2026-12-20T18:00:00+08:00"` |
+ | Байршил, Google Maps | `data/event.ts` → `mapUrl`, `mapEmbedUrl` |
+ | Instagram / Facebook | `data/event.ts` → `socials` |
+ | Theme (Midnight in Motion), dress code | `data/event.ts` → `theme` |
+@@ -181,13 +181,14 @@ auth: { allowedDomains: ["ufe.edu.mn"], ... }
+ 
+ ## 8. Тасалбар борлуулалт (Early Bird / Regular / VIP)
+ 
+-**Урсгал:** Оюутан @ufe.edu.mn майлаар нэвтэрнэ → ангиллаа сонгоно → QPay эсвэл дансаар төлнө → төлбөр баталгаажмагц **QR тасалбар** `/orders/<код>` болон `/pass` ("Миний тасалбар") хуудсанд гарна → хаалган дээр админ QR уншуулж **check-in** хийнэ.
++**Урсгал:** Оюутан @ufe.edu.mn майлаар нэвтэрнэ → ангиллаа сонгоно → тасалбарын тоог (1–3) сонгоно. 1-ээс олон бол **"Нэмэлт тасалбар хэнд зориулагдсан бэ?"** гэж асууж найз бүрийн овог нэр, утсыг бөглүүлнэ → QPay эсвэл дансаар төлнө → төлбөр баталгаажмагц **QR тасалбар** `/orders/<код>` болон `/pass` ("Миний тасалбар") хуудсанд гарна → хаалган дээр админ QR уншуулж **check-in** хийнэ.
+ 
+ ### Тохиргоо
+ | Юуг | Хаана |
+ |---|---|
+ | Үнэ, тоо ширхэг, давуу тал, Early Bird дуусах огноо | `data/tickets.ts` → `tiers` (Early Bird 70,000₮ · Regular 80,000₮ · VIP 200,000₮, 240ш) |
+-| Нэг оюутны авах тоо | `data/tickets.ts` → `maxPerStudent` |
++| Найзын тоо (оюутан өөрөө + N найз) | `data/tickets.ts` → `maxGuests` (одоо 2) |
++| Нэг оюутны идэвхтэй захиалгын тоо | `data/tickets.ts` → `maxOrdersPerStudent` (одоо 1) |
+ | Дансны мэдээлэл | `data/tickets.ts` → `bank` (дансны дугаар хоосон бол "Дансаар" сонголт идэвхгүй) |
+ 
+ ### Vercel Environment Variables
+@@ -204,6 +205,13 @@ auth: { allowedDomains: ["ufe.edu.mn"], ... }
+ - `/admin` — **админ**: борлуулалтын тоо, орлого, дансаар төлсөн захиалгыг баталгаажуулах, check-in
+ - `/t/<код>` — тасалбарын QR уншуулахад нээгдэнэ (админ бол CHECK-IN товч гарна)
+ 
++### Найзтайгаа ирэх
++- Нэг захиалгад оюутны өөрийн 1 + найзын 2 хүртэлх тасалбар орно. Үнэ = тасалбарын үнэ × тоо.
++- Төлбөр баталгаажмагц тасалбар бүрт **тусдаа QR** гарна (`tk_tickets` хүснэгт). Оюутан найзынхаа тасалбарыг screenshot хийж илгээнэ.
++- Хаалган дээр найзын QR-ийг уншуулахад "ЗОЧИН", нэр, утас, урьсан оюутан харагдана. Нэрийг иргэний үнэмлэхээр тулгана.
++- Ангиллын үлдэгдэл тасалбараар тоологдоно (3 тасалбартай захиалга = 3).
++- Хуучин хүснэгт анхны хүсэлтээр автоматаар шинэчлэгдэж, өмнө зарагдсан тасалбарууд `tk_tickets` руу хуулагдана.
++
+ ### Аюулгүй байдал
+ - QPay callback-д итгэхгүй — төлбөрийг QPay API-аас (`/v2/payment/check`) дахин шалгаж баталгаажуулна.
+ - QR тасалбарыг зөвхөн эзэмшигч болон админ харна. Тасалбар нэг удаа л check-in хийгдэнэ.
+diff --git a/app/api/admin/orders/route.ts b/app/api/admin/orders/route.ts
+index 7618779..6058d42 100644
+--- a/app/api/admin/orders/route.ts
++++ b/app/api/admin/orders/route.ts
+@@ -22,9 +22,10 @@ export async function GET(req: NextRequest) {
+       tier: t.id,
+       name: t.name,
+       quantity: t.quantity,
+-      paid: paid.length,
+-      pending: all.filter((o) => o.tier === t.id && o.status === "pending").length,
+-      checkedIn: paid.filter((o) => o.checkedInAt).length,
++      // Тоо бүгд тасалбараар (нэг захиалгад 1–3 тасалбар)
++      paid: paid.reduce((s, o) => s + o.quantity, 0),
++      pending: all.filter((o) => o.tier === t.id && o.status === "pending").reduce((s, o) => s + o.quantity, 0),
++      checkedIn: paid.reduce((s, o) => s + o.tickets.filter((x) => x.checkedInAt).length, 0),
+       revenue: paid.reduce((s, o) => s + o.amount, 0),
+     };
+   });
+@@ -32,7 +33,9 @@ export async function GET(req: NextRequest) {
+     {
+       stats,
+       orders: orders.map((o) => ({
+-        ref: o.ref, email: o.email, tier: o.tier, amount: o.amount, method: o.method, status: o.status,
++        ref: o.ref, email: o.email, tier: o.tier, quantity: o.quantity, amount: o.amount,
++        guests: o.guests,
++        tickets: o.tickets.map((x) => ({ code: x.code, holder: x.isGuest ? x.holderName : o.email, checkedInAt: x.checkedInAt })), method: o.method, status: o.status,
+         createdAt: o.createdAt, paidAt: o.paidAt, ticketCode: o.ticketCode, checkedInAt: o.checkedInAt, confirmedBy: o.confirmedBy,
+       })),
+     },
+diff --git a/app/api/tickets/order/route.ts b/app/api/tickets/order/route.ts
+index 939ec7e..e4891b4 100644
+--- a/app/api/tickets/order/route.ts
++++ b/app/api/tickets/order/route.ts
+@@ -13,11 +13,11 @@ export async function POST(req: NextRequest) {
+   if (!email) return jsonError("Тасалбар авахын тулд нэвтэрнэ үү.", 401);
+   const missing = dbMissing();
+   if (missing) return missing;
+-  const body = (await req.json().catch(() => ({}))) as { tier?: string; method?: string };
++  const body = (await req.json().catch(() => ({}))) as { tier?: string; method?: string; guests?: unknown };
+   const method = body.method === "qpay" || body.method === "bank" ? body.method : null;
+   if (!method || !body.tier) return jsonError("Тасалбар болон төлбөрийн хэлбэрээ сонгоно уу.", 400);
+   try {
+-    const order = await placeOrder(email, body.tier, method, getBaseUrl(req.nextUrl.origin));
++    const order = await placeOrder(email, body.tier, method, body.guests, getBaseUrl(req.nextUrl.origin));
+     return NextResponse.json({ order: orderDTO(order) }, { status: 201 });
+   } catch (e) {
+     if (e instanceof TicketError) return jsonError(e.message, e.status);
+diff --git a/app/api/tickets/qr/[code]/route.ts b/app/api/tickets/qr/[code]/route.ts
+index 4338b04..590b73a 100644
+--- a/app/api/tickets/qr/[code]/route.ts
++++ b/app/api/tickets/qr/[code]/route.ts
+@@ -12,7 +12,9 @@ export const dynamic = "force-dynamic";
+ export async function GET(req: NextRequest, ctx: { params: Promise<{ code: string }> }) {
+   const email = await getSessionEmail();
+   const code = (await ctx.params).code.toUpperCase();
+-  const order = await ticketStore().getByTicket(code);
++  const found = await ticketStore().getByTicket(code);
++  const order = found?.order;
++  // Найзын тасалбарыг ч захиалсан оюутан харж, найздаа дамжуулна
+   if (!email || !order || order.status !== "paid" || (order.email !== email && !isAdmin(email))) {
+     return new Response("Not found", { status: 404 });
+   }
+diff --git a/app/opengraph-image.tsx b/app/opengraph-image.tsx
+index 8d2bcee..9e51d51 100644
+--- a/app/opengraph-image.tsx
++++ b/app/opengraph-image.tsx
+@@ -31,7 +31,7 @@ export default function OpengraphImage() {
+           THE NIGHT TO REMEMBER.
+         </div>
+         <div style={{ fontSize: 28, letterSpacing: 6, color: "#536DFF", marginTop: 40 }}>
+-          19 DECEMBER 2026 · CORPORATE CONVENTION CENTRE
++          20 DECEMBER 2026 · CORPORATE CONVENTION CENTRE
+         </div>
+       </div>
+     ),
+diff --git a/app/pass/page.tsx b/app/pass/page.tsx
+index a947e78..52258c6 100644
+--- a/app/pass/page.tsx
++++ b/app/pass/page.tsx
+@@ -25,7 +25,7 @@ export default async function PassPage() {
+   } catch (e) {
+     console.error(e);
+   }
+-  const paid = orders.filter((o) => o.status === "paid" && o.ticketCode);
++  const paid = orders.filter((o) => o.status === "paid" && o.tickets.length > 0);
+   const pending = orders.filter((o) => o.status === "pending");
+ 
+   return (
+@@ -69,14 +69,16 @@ export default async function PassPage() {
+ 
+         <section className="mt-10" aria-labelledby="my-tickets">
+           <h2 id="my-tickets" className="mb-4 text-center font-display text-xs font-semibold tracking-[0.3em] text-silver/70">МИНИЙ ТАСАЛБАР</h2>
+-          {paid.map((o) => (
+-            <div key={o.ref} className="mb-6">
+-              <TicketCard tierName={o.tierName} holder={o.holder} ref_={o.ref} ticketCode={o.ticketCode!} checkedInAt={o.checkedInAt} />
+-            </div>
+-          ))}
++          {paid.flatMap((o) =>
++            o.tickets.map((t) => (
++              <div key={t.code} className="mb-6">
++                <TicketCard tierName={o.tierName} holder={t.holder} invitedBy={t.invitedBy} ref_={o.ref} ticketCode={t.code} checkedInAt={t.checkedInAt} />
++              </div>
++            )),
++          )}
+           {pending.map((o) => (
+             <a key={o.ref} href={`/orders/${o.ref}`} className="mb-3 flex items-center justify-between rounded-2xl border border-amber-400/30 bg-amber-400/10 p-4 text-sm">
+-              <span className="text-white">{o.tierName} · {formatMNT(o.amount)} <span className="ml-1 font-mono text-xs text-silver/70">{o.ref}</span></span>
++              <span className="text-white">{o.tierName}{o.quantity > 1 ? ` ×${o.quantity}` : ""} · {formatMNT(o.amount)} <span className="ml-1 font-mono text-xs text-silver/70">{o.ref}</span></span>
+               <span className="text-xs font-semibold text-amber-300">Төлбөр хүлээгдэж буй →</span>
+             </a>
+           ))}
+diff --git a/app/t/[code]/page.tsx b/app/t/[code]/page.tsx
+index 1b7ee40..222f81d 100644
+--- a/app/t/[code]/page.tsx
++++ b/app/t/[code]/page.tsx
+@@ -15,7 +15,9 @@ export const dynamic = "force-dynamic";
+ /** Тасалбарын QR уншуулахад нээгдэх хуудас. Админ бол Check-in хийнэ. */
+ export default async function TicketVerifyPage({ params }: { params: Promise<{ code: string }> }) {
+   const code = (await params).code.toUpperCase();
+-  const order = await ticketStore().getByTicket(code);
++  const found = await ticketStore().getByTicket(code);
++  const order = found?.order;
++  const ticket = found?.ticket;
+   const email = await getSessionEmail();
+   const admin = isAdmin(email);
+   const valid = order?.status === "paid";
+@@ -31,21 +33,31 @@ export default async function TicketVerifyPage({ params }: { params: Promise<{ c
+             <XCircle className="mx-auto h-14 w-14 text-[#ff8a9b]" aria-hidden="true" />
+           )}
+           <h1 className="mt-4 font-display text-2xl font-bold text-white">{valid ? "ХҮЧИНТЭЙ ТАСАЛБАР" : "ХҮЧИНГҮЙ ТАСАЛБАР"}</h1>
+-          {valid && order && (
++          {valid && order && ticket && (
+             <>
+               <p className="mt-3 inline-block rounded-full bg-electric px-4 py-1.5 font-display text-xs font-bold tracking-[0.2em] text-white">
+                 {getTier(order.tier)?.name ?? order.tier}
+               </p>
+-              <p className="mt-3 text-sm text-silver">{admin ? order.email : displayName(order.email)}</p>
++              {ticket.isGuest ? (
++                <div className="mt-3 text-sm text-silver">
++                  <p className="inline-block rounded-full bg-amber-400/15 px-3 py-1 text-[0.65rem] font-bold tracking-[0.2em] text-amber-300">ЗОЧИН</p>
++                  <p className="mt-2 text-lg font-semibold text-white">{ticket.holderName}</p>
++                  {admin && ticket.holderPhone && <p className="mt-0.5 font-mono text-xs">{ticket.holderPhone}</p>}
++                  <p className="mt-1 text-xs text-silver/70">Урьсан: {admin ? order.email : displayName(order.email)}</p>
++                  {admin && <p className="mt-2 text-xs text-amber-200/80">Иргэний үнэмлэхээр нэрийг тулгана уу.</p>}
++                </div>
++              ) : (
++                <p className="mt-3 text-sm text-silver">{admin ? order.email : displayName(order.email)}</p>
++              )}
+               <p className="mt-1 font-mono text-xs tracking-[0.2em] text-silver/60">{code}</p>
+-              {order.checkedInAt && (
++              {ticket.checkedInAt && (
+                 <p className="mt-4 text-sm font-semibold text-amber-300">
+-                  Орсон: {new Date(order.checkedInAt).toLocaleString("mn-MN", { timeZone: "Asia/Ulaanbaatar" })}
++                  Орсон: {new Date(ticket.checkedInAt).toLocaleString("mn-MN", { timeZone: "Asia/Ulaanbaatar" })}
+                 </p>
+               )}
+               <div className="mt-6">
+                 {admin ? (
+-                  order.checkedInAt ? null : <CheckInButton code={code} />
++                  ticket.checkedInAt ? null : <CheckInButton code={code} />
+                 ) : (
+                   <p className="inline-flex items-center gap-2 text-xs text-silver/60">
+                     <ShieldAlert className="h-4 w-4" aria-hidden="true" /> Check-in-ийг зөвхөн зохион байгуулагч хийнэ.
+diff --git a/app/tickets/buy/page.tsx b/app/tickets/buy/page.tsx
+index c0bde15..5b28258 100644
+--- a/app/tickets/buy/page.tsx
++++ b/app/tickets/buy/page.tsx
+@@ -52,7 +52,7 @@ export default async function BuyPage({ searchParams }: { searchParams: Promise<
+         <div className="glass mt-8 rounded-3xl p-6 sm:p-8">
+           {setupError ? (
+             <p className="text-center text-sm leading-relaxed text-amber-200">{setupError}</p>
+-          ) : mine.length >= ticketConfig.maxPerStudent ? (
++          ) : mine.length >= ticketConfig.maxOrdersPerStudent ? (
+             <div className="text-center">
+               <p className="text-sm text-silver">Танд идэвхтэй захиалга байна.</p>
+               <a href={`/orders/${mine[0].ref}`} className="mt-4 inline-block rounded-full bg-electric px-6 py-3 font-display text-xs font-semibold tracking-[0.2em] text-white">
+@@ -62,7 +62,7 @@ export default async function BuyPage({ searchParams }: { searchParams: Promise<
+           ) : !state.open ? (
+             <p className="text-center text-sm text-silver">Энэ ангиллын тасалбар одоогоор зарагдахгүй байна.</p>
+           ) : (
+-            <BuyForm tier={tier.id} methods={methods} />
++            <BuyForm tier={tier.id} price={tier.price} maxGuests={Math.max(0, Math.min(ticketConfig.maxGuests, state.remaining - 1))} methods={methods} />
+           )}
+         </div>
+       </AuthShell>
+diff --git a/components/CountdownTimer.tsx b/components/CountdownTimer.tsx
+index f43c118..a801ddf 100644
+--- a/components/CountdownTimer.tsx
++++ b/components/CountdownTimer.tsx
+@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
+ import { Sparkles } from "lucide-react";
+ 
+ interface CountdownTimerProps {
+-  /** ISO огноо, цагийн бүстэй: "2026-12-19T18:00:00+08:00" */
++  /** ISO огноо, цагийн бүстэй: "2026-12-20T18:00:00+08:00" */
+   target: string;
+   startedMessage: string;
+ }
+diff --git a/components/tickets/AdminDashboard.tsx b/components/tickets/AdminDashboard.tsx
+index 89a653b..dd66b47 100644
+--- a/components/tickets/AdminDashboard.tsx
++++ b/components/tickets/AdminDashboard.tsx
+@@ -6,7 +6,8 @@ import { api } from "@/lib/client-utils";
+ import { formatMNT } from "@/data/tickets";
+ 
+ type Row = {
+-  ref: string; email: string; tier: string; amount: number; method: "qpay" | "bank"; status: string;
++  ref: string; email: string; tier: string; quantity: number; guests: { name: string; phone: string }[];
++  tickets: { code: string; holder: string | null; checkedInAt: string | null }[]; amount: number; method: "qpay" | "bank"; status: string;
+   createdAt: string; paidAt: string | null; ticketCode: string | null; checkedInAt: string | null; confirmedBy: string | null;
+ };
+ type Stat = { tier: string; name: string; quantity: number; paid: number; pending: number; checkedIn: number; revenue: number };
+@@ -127,13 +128,22 @@ export default function AdminDashboard() {
+               {rows.map((r) => (
+                 <tr key={r.ref} className="border-t border-white/[0.06] text-silver">
+                   <td className="p-3 font-mono text-white">{r.ref}</td>
+-                  <td className="p-3">{r.email}</td>
+-                  <td className="p-3 uppercase">{r.tier}</td>
++                  <td className="p-3">
++                    {r.email}
++                    {r.guests.map((g) => (
++                      <span key={g.phone + g.name} className="block text-xs text-amber-200/80">+ {g.name} · {g.phone}</span>
++                    ))}
++                  </td>
++                  <td className="p-3 uppercase">{r.tier}{r.quantity > 1 && <span className="ml-1 normal-case text-white">×{r.quantity}</span>}</td>
+                   <td className="p-3">{formatMNT(r.amount)}</td>
+                   <td className="p-3">{r.method === "qpay" ? "QPay" : "Данс"}</td>
+                   <td className="p-3">
+                     <span className={`rounded-full px-2.5 py-1 text-[0.65rem] font-semibold ${COLOR[r.status]}`}>{STATUS[r.status]}</span>
+-                    {r.checkedInAt && <span className="ml-1 text-[0.65rem] text-emerald-300">· орсон</span>}
++                    {r.tickets.some((t) => t.checkedInAt) && (
++                      <span className="ml-1 text-[0.65rem] text-emerald-300">
++                        · {r.tickets.filter((t) => t.checkedInAt).length}/{r.tickets.length} орсон
++                      </span>
++                    )}
+                   </td>
+                   <td className="p-3 text-xs">{fmt(r.createdAt)}</td>
+                   <td className="p-3">
+@@ -151,9 +161,11 @@ export default function AdminDashboard() {
+                           <X className="h-3.5 w-3.5" />
+                         </button>
+                       )}
+-                      {r.ticketCode && (
+-                        <a href={`/t/${r.ticketCode}`} className="rounded-full border border-white/15 px-3 py-1.5 text-xs">Тасалбар</a>
+-                      )}
++                      {r.tickets.map((t, i) => (
++                        <a key={t.code} href={`/t/${t.code}`} title={t.holder ?? ""} className="rounded-full border border-white/15 px-3 py-1.5 text-xs">
++                          {i === 0 ? "Тасалбар" : `Зочин ${i}`}
++                        </a>
++                      ))}
+                     </div>
+                   </td>
+                 </tr>
+diff --git a/components/tickets/BuyForm.tsx b/components/tickets/BuyForm.tsx
+index 0577097..34f1a45 100644
+--- a/components/tickets/BuyForm.tsx
++++ b/components/tickets/BuyForm.tsx
+@@ -2,28 +2,55 @@
+ 
+ import { useState } from "react";
+ import { useRouter } from "next/navigation";
+-import { Landmark, Loader2, QrCode } from "lucide-react";
++import { Landmark, Loader2, Minus, Plus, QrCode, UserPlus } from "lucide-react";
+ import { api } from "@/lib/client-utils";
++import { formatMNT } from "@/data/tickets";
+ 
+ interface Props {
+   tier: string;
++  price: number;
++  /** Энэ ангилалд авч болох найзын дээд тоо (тохиргоо ба үлдэгдлээс хамаарна) */
++  maxGuests: number;
+   methods: { qpay: boolean; bank: boolean };
+ }
+ 
+-export default function BuyForm({ tier, methods }: Props) {
++type GuestInput = { name: string; phone: string };
++
++const inputCls =
++  "w-full rounded-xl border border-white/10 bg-night px-4 py-3 text-sm text-white placeholder:text-silver/40 focus:border-electric focus:outline-none";
++
++export default function BuyForm({ tier, price, maxGuests, methods }: Props) {
+   const router = useRouter();
++  const [count, setCount] = useState(1);
++  const [guests, setGuests] = useState<GuestInput[]>([]);
+   const [method, setMethod] = useState<"qpay" | "bank" | null>(methods.qpay ? "qpay" : methods.bank ? "bank" : null);
+   const [busy, setBusy] = useState(false);
+   const [error, setError] = useState<string | null>(null);
+ 
++  function changeCount(next: number) {
++    const n = Math.min(Math.max(next, 1), 1 + maxGuests);
++    setCount(n);
++    // Тоог нэмэхэд хоосон мөр нэмж, багасгахад сүүлийнхийг хасна (бичсэн нэрс хадгалагдана)
++    setGuests((g) => Array.from({ length: n - 1 }, (_, i) => g[i] ?? { name: "", phone: "" }));
++  }
++
++  const setGuest = (i: number, field: keyof GuestInput, value: string) =>
++    setGuests((g) => g.map((x, j) => (j === i ? { ...x, [field]: value } : x)));
++
++  const guestsComplete = guests.every((g) => g.name.trim().length >= 2 && g.phone.replace(/\D/g, "").length >= 8);
++
+   async function submit() {
+     if (!method) return;
++    if (!guestsComplete) {
++      setError("Найз бүрийн овог нэр, утасны дугаарыг бөглөнө үү.");
++      return;
++    }
+     setBusy(true);
+     setError(null);
+     try {
+       const { order } = await api<{ order: { ref: string } }>("/api/tickets/order", {
+         method: "POST",
+-        body: JSON.stringify({ tier, method }),
++        body: JSON.stringify({ tier, method, guests }),
+       });
+       router.push(`/orders/${order.ref}`);
+     } catch (e) {
+@@ -39,7 +66,83 @@ export default function BuyForm({ tier, methods }: Props) {
+ 
+   return (
+     <div>
+-      <p className="text-[0.65rem] font-semibold tracking-[0.3em] text-silver/70">ТӨЛБӨРИЙН ХЭЛБЭР</p>
++      <p className="text-[0.65rem] font-semibold tracking-[0.3em] text-silver/70">ТАСАЛБАРЫН ТОО</p>
++      <div className="mt-3 flex items-center justify-between gap-4 rounded-2xl border border-white/10 p-4">
++        <div>
++          <p className="font-display text-sm font-semibold text-white">
++            {count === 1 ? "Зөвхөн өөртөө" : `Өөртөө + ${count - 1} найздаа`}
++          </p>
++          <p className="mt-1 text-xs text-silver/70">
++            {maxGuests > 0 ? `СЭЗИС-ийн оюутан ${maxGuests} хүртэлх найзтайгаа ирж болно.` : "Энэ ангилалд найзын тасалбар үлдээгүй."}
++          </p>
++        </div>
++        <div className="flex items-center gap-3">
++          <button
++            type="button"
++            onClick={() => changeCount(count - 1)}
++            disabled={count <= 1}
++            className="grid h-9 w-9 place-items-center rounded-full border border-white/15 text-white disabled:opacity-30"
++            aria-label="Тасалбар хасах"
++          >
++            <Minus className="h-4 w-4" />
++          </button>
++          <span className="w-5 text-center font-display text-lg font-bold text-white" aria-live="polite">{count}</span>
++          <button
++            type="button"
++            onClick={() => changeCount(count + 1)}
++            disabled={count >= 1 + maxGuests}
++            className="grid h-9 w-9 place-items-center rounded-full border border-white/15 text-white disabled:opacity-30"
++            aria-label="Тасалбар нэмэх"
++          >
++            <Plus className="h-4 w-4" />
++          </button>
++        </div>
++      </div>
++
++      {guests.length > 0 && (
++        <fieldset className="mt-6">
++          <legend className="flex items-center gap-2 text-[0.65rem] font-semibold tracking-[0.3em] text-silver/70">
++            <UserPlus className="h-3.5 w-3.5" aria-hidden="true" /> НЭМЭЛТ ТАСАЛБАР ХЭНД ЗОРИУЛАГДСАН БЭ?
++          </legend>
++          <p className="mt-2 text-xs leading-relaxed text-silver/70">
++            Найз бүрт нэртэй тусдаа QR тасалбар гарна. Хаалган дээр иргэний үнэмлэхээр нэрийг нь тулгана.
++          </p>
++          <div className="mt-3 space-y-3">
++            {guests.map((g, i) => (
++              <div key={i} className="rounded-2xl border border-white/10 p-4">
++                <p className="mb-3 font-display text-xs font-semibold text-white">{i + 1}-р найз</p>
++                <div className="grid gap-2 sm:grid-cols-2">
++                  <label className="block">
++                    <span className="sr-only">{i + 1}-р найзын овог нэр</span>
++                    <input
++                      value={g.name}
++                      onChange={(e) => setGuest(i, "name", e.target.value)}
++                      placeholder="Овог нэр"
++                      autoComplete="off"
++                      maxLength={60}
++                      className={inputCls}
++                    />
++                  </label>
++                  <label className="block">
++                    <span className="sr-only">{i + 1}-р найзын утасны дугаар</span>
++                    <input
++                      value={g.phone}
++                      onChange={(e) => setGuest(i, "phone", e.target.value)}
++                      placeholder="Утас (99112233)"
++                      inputMode="tel"
++                      autoComplete="off"
++                      maxLength={15}
++                      className={inputCls}
++                    />
++                  </label>
++                </div>
++              </div>
++            ))}
++          </div>
++        </fieldset>
++      )}
++
++      <p className="mt-6 text-[0.65rem] font-semibold tracking-[0.3em] text-silver/70">ТӨЛБӨРИЙН ХЭЛБЭР</p>
+       <div className="mt-3 grid gap-3" role="radiogroup">
+         {options.map((o) => (
+           <button
+@@ -65,6 +168,14 @@ export default function BuyForm({ tier, methods }: Props) {
+           </button>
+         ))}
+       </div>
++
++      <div className="mt-6 flex items-baseline justify-between border-t border-white/10 pt-4">
++        <span className="text-sm text-silver">
++          {count} × {formatMNT(price)}
++        </span>
++        <span className="font-display text-xl font-bold text-white">{formatMNT(price * count)}</span>
++      </div>
++
+       {error && <p className="mt-4 text-sm text-[#ff8a9b]" role="alert">{error}</p>}
+       <button
+         onClick={submit}
+diff --git a/components/tickets/OrderView.tsx b/components/tickets/OrderView.tsx
+index 37c79d0..17a4830 100644
+--- a/components/tickets/OrderView.tsx
++++ b/components/tickets/OrderView.tsx
+@@ -10,13 +10,17 @@ export interface OrderDTO {
+   ref: string;
+   tier: string;
+   tierName: string;
++  quantity: number;
++  guests: string[];
+   amount: number;
++  unitPrice: number;
+   method: "qpay" | "bank";
+   status: "pending" | "paid" | "cancelled" | "expired";
+   expiresAt: string;
+   ticketCode: string | null;
+   checkedInAt: string | null;
+   holder: string;
++  tickets: { code: string; isGuest: boolean; holder: string; invitedBy: string | null; checkedInAt: string | null }[];
+   qpay: { qrImage: string | null; shortUrl: string | null; urls: { name: string; description?: string; logo?: string; link: string }[] } | null;
+   bank: { bankName: string; accountNumber: string; accountName: string; iban: string; description: string } | null;
+ }
+@@ -85,11 +89,17 @@ export default function OrderView({ initial, devMock }: { initial: OrderDTO; dev
+     }
+   }
+ 
+-  if (order.status === "paid" && order.ticketCode) {
++  if (order.status === "paid" && order.tickets.length > 0) {
+     return (
+       <div>
+-        <p className="mb-6 text-center text-sm text-emerald-300">✓ Төлбөр баталгаажлаа. Таны тасалбар бэлэн!</p>
+-        <TicketCard tierName={order.tierName} holder={order.holder} ref_={order.ref} ticketCode={order.ticketCode} checkedInAt={order.checkedInAt} />
++        <p className="mb-6 text-center text-sm text-emerald-300">
++          ✓ Төлбөр баталгаажлаа. {order.tickets.length > 1 ? `${order.tickets.length} тасалбар бэлэн! Найзуудынхаа тасалбарыг тус бүрд нь илгээгээрэй.` : "Таны тасалбар бэлэн!"}
++        </p>
++        <div className="space-y-6">
++          {order.tickets.map((t) => (
++            <TicketCard key={t.code} tierName={order.tierName} holder={t.holder} invitedBy={t.invitedBy} ref_={order.ref} ticketCode={t.code} checkedInAt={t.checkedInAt} />
++          ))}
++        </div>
+       </div>
+     );
+   }
+@@ -115,6 +125,11 @@ export default function OrderView({ initial, devMock }: { initial: OrderDTO; dev
+         <div>
+           <p className="text-[0.62rem] font-semibold tracking-[0.3em] text-silver/60">{order.tierName} · {order.ref}</p>
+           <p className="mt-1 font-display text-3xl font-bold text-white">{formatMNT(order.amount)}</p>
++          {order.quantity > 1 && (
++            <p className="mt-1 text-xs text-silver/70">
++              {order.quantity} × {formatMNT(order.unitPrice)} · Өөрөө + {order.guests.join(", ")}
++            </p>
++          )}
+         </div>
+         <p className="text-xs text-silver/70">Хүчинтэй: <span className="font-semibold text-white">{left}</span></p>
+       </div>
+diff --git a/components/tickets/TicketCard.tsx b/components/tickets/TicketCard.tsx
+index 8d26f2c..2e0c5a6 100644
+--- a/components/tickets/TicketCard.tsx
++++ b/components/tickets/TicketCard.tsx
+@@ -8,17 +8,24 @@ interface Props {
+   ref_: string;
+   ticketCode: string;
+   checkedInAt?: string | null;
++  /** Найзын тасалбар бол урьсан оюутан */
++  invitedBy?: string | null;
+ }
+ 
+ /** QR тасалбар — хаалган дээр үзүүлнэ */
+-export default function TicketCard({ tierName, holder, ref_, ticketCode, checkedInAt }: Props) {
++export default function TicketCard({ tierName, holder, ref_, ticketCode, checkedInAt, invitedBy }: Props) {
+   return (
+     <article className="relative mx-auto w-full max-w-sm overflow-hidden rounded-3xl border border-silver/20 bg-gradient-to-b from-ink to-night shadow-[0_30px_80px_-30px_rgba(83,109,255,0.7)]">
+       <div className="absolute -right-16 -top-16 h-48 w-48 rounded-full bg-electric/25 blur-3xl" aria-hidden="true" />
+       <div className="relative p-6 text-center">
+         <div className="flex items-center justify-between">
+           <PaperStar size={26} />
+-          <span className="rounded-full bg-electric px-3 py-1 font-display text-[0.62rem] font-bold tracking-[0.2em] text-white">{tierName}</span>
++          <span className="flex gap-1.5">
++            {invitedBy && (
++              <span className="rounded-full bg-amber-400/20 px-3 py-1 font-display text-[0.62rem] font-bold tracking-[0.2em] text-amber-200">ЗОЧИН</span>
++            )}
++            <span className="rounded-full bg-electric px-3 py-1 font-display text-[0.62rem] font-bold tracking-[0.2em] text-white">{tierName}</span>
++          </span>
+         </div>
+         <h2 className="chrome-text mt-5 font-display text-2xl font-bold leading-tight">{siteConfig.title}</h2>
+         <p className="mt-1 font-display text-[0.6rem] tracking-[0.3em] text-silver/70">{siteConfig.tagline}</p>
+@@ -41,12 +48,15 @@ export default function TicketCard({ tierName, holder, ref_, ticketCode, checked
+         ) : null}
+         <dl className="mt-5 space-y-2 text-left text-xs text-silver">
+           <div className="flex justify-between gap-3"><dt className="text-silver/55">Эзэмшигч</dt><dd className="font-semibold text-white">{holder}</dd></div>
++          {invitedBy && <div className="flex justify-between gap-3"><dt className="text-silver/55">Урьсан</dt><dd className="text-white">{invitedBy}</dd></div>}
+           <div className="flex justify-between gap-3"><dt className="text-silver/55">Захиалга</dt><dd className="font-mono text-white">{ref_}</dd></div>
+           <div className="flex justify-between gap-3"><dt className="inline-flex items-center gap-1.5 text-silver/55"><CalendarDays className="h-3.5 w-3.5" />Огноо</dt><dd className="text-white">{siteConfig.dateShort} · {siteConfig.timeLabel}</dd></div>
+           <div className="flex justify-between gap-3"><dt className="inline-flex items-center gap-1.5 text-silver/55"><MapPin className="h-3.5 w-3.5" />Байршил</dt><dd className="text-right text-white">{siteConfig.venue}</dd></div>
+         </dl>
+         <p className="mt-5 text-[0.68rem] leading-relaxed text-silver/55">
+-          Хаалган дээр энэ QR-ийг үзүүлнэ. Screenshot хийж хадгалаарай. QR-ээ бусдад бүү дамжуулаарай — нэг удаа л уншигдана.
++          {invitedBy
++            ? "Энэ тасалбарыг найздаа screenshot хийж илгээгээрэй. Хаалган дээр QR-ийг уншуулж, иргэний үнэмлэхээр нэрийг тулгана. Нэг удаа л уншигдана."
++            : "Хаалган дээр энэ QR-ийг үзүүлнэ. Screenshot хийж хадгалаарай. QR-ээ бусдад бүү дамжуулаарай, нэг удаа л уншигдана."}
+         </p>
+       </div>
+     </article>
+diff --git a/components/tickets/TicketsSection.tsx b/components/tickets/TicketsSection.tsx
+index 22a70c9..2af5445 100644
+--- a/components/tickets/TicketsSection.tsx
++++ b/components/tickets/TicketsSection.tsx
+@@ -91,7 +91,7 @@ export default function TicketsSection() {
+           })}
+         </ul>
+         <p className="mt-8 text-center text-xs text-silver/60">
+-          Нэг оюутан {ticketConfig.maxPerStudent} тасалбар авах эрхтэй · Зөвхөн @ufe.edu.mn майлтай оюутан
++          СЭЗИС-ийн оюутан @ufe.edu.mn майлаараа нэвтэрч, өөртөө болон {ticketConfig.maxGuests} хүртэлх найздаа тасалбар авна
+         </p>
+       </div>
+     </section>
+diff --git a/data/event.ts b/data/event.ts
+index ce3e099..623a0c4 100644
+--- a/data/event.ts
++++ b/data/event.ts
+@@ -10,9 +10,9 @@ export const eventInfo = {
+   universityEn: "University of Finance and Economics",
+ 
+   /** Countdown зорилтот хугацаа — Монголын цаг (UTC+8) */
+-  startsAt: "2026-12-19T18:00:00+08:00",
+-  dateLabel: "19 DECEMBER 2026",
+-  dateShort: "19.12.2026",
++  startsAt: "2026-12-20T18:00:00+08:00",
++  dateLabel: "20 DECEMBER 2026",
++  dateShort: "20.12.2026",
+   timeLabel: "18:00",
+ 
+   venue: "Corporate Convention Centre",
+diff --git a/data/tickets.ts b/data/tickets.ts
+index 13bd55c..aecf548 100644
+--- a/data/tickets.ts
++++ b/data/tickets.ts
+@@ -20,8 +20,10 @@ export interface TicketTier {
+ 
+ export const ticketConfig = {
+   currency: "₮",
+-  /** Нэг оюутан нийт хэдэн тасалбар авах эрхтэй */
+-  maxPerStudent: 1,
++  /** Нэг оюутан хэдэн идэвхтэй захиалгатай байж болох (өөрийн + найзуудын тасалбар нэг захиалгад) */
++  maxOrdersPerStudent: 1,
++  /** Оюутан өөртөө 1 тасалбар + хамгийн ихдээ хэдэн найздаа тасалбар авч болох */
++  maxGuests: 2,
+   /** QPay нэхэмжлэл хүчинтэй хугацаа (минут) */
+   qpayExpiryMinutes: 30,
+   /** Дансаар шилжүүлэх захиалгыг хүлээх хугацаа (цаг) */
+@@ -65,6 +67,30 @@ export const ticketConfig = {
+   },
+ };
+ 
+-export const getTier = (id: string) => ticketConfig.tiers.find((t) => t.id === id) as TicketTier | undefined;
++/** Нэг захиалгад авах дээд тоо: оюутан өөрөө + найзууд */
++export const maxTicketsPerOrder = 1 + ticketConfig.maxGuests;
++
++export interface Guest {
++  name: string;
++  phone: string;
++}
++
++/** Найзын мэдээллийг шалгаж цэвэрлэнэ. Алдаатай бол мессеж буцаана. */
++export function validateGuests(input: unknown): Guest[] | string {
++  if (input == null) return [];
++  if (!Array.isArray(input)) return "Найзын мэдээлэл буруу байна.";
++  if (input.length > ticketConfig.maxGuests) return `Хамгийн ихдээ ${ticketConfig.maxGuests} найзтайгаа ирэх боломжтой.`;
++  const out: Guest[] = [];
++  for (const [i, g] of input.entries()) {
++    const name = String((g as Guest)?.name ?? "").trim().replace(/\s+/g, " ");
++    const phone = String((g as Guest)?.phone ?? "").replace(/[\s-]/g, "");
++    if (name.length < 2 || name.length > 60) return `${i + 1}-р найзын овог нэрийг бичнэ үү.`;
++    if (!/^\+?\d{8,12}$/.test(phone)) return `${i + 1}-р найзын утасны дугаар буруу байна (8 оронтой).`;
++    out.push({ name, phone });
++  }
++  return out;
++}
++
++export const getTier =(id: string) => ticketConfig.tiers.find((t) => t.id === id) as TicketTier | undefined;
+ 
+ export const formatMNT = (n: number) => `${n.toLocaleString("en-US")}${ticketConfig.currency}`;
+diff --git a/lib/tickets-db.ts b/lib/tickets-db.ts
+index 366e13a..16b7847 100644
+--- a/lib/tickets-db.ts
++++ b/lib/tickets-db.ts
+@@ -1,24 +1,43 @@
+ import "server-only";
+ import { neon } from "@neondatabase/serverless";
+ import { randomBytes } from "node:crypto";
++import type { Guest } from "@/data/tickets";
+ 
+ /**
+  * Тасалбарын захиалгын өгөгдлийн сан (Neon Postgres).
+  * DATABASE_URL байхгүй үед (зөвхөн локал dev) санах ойд хадгална.
++ *
++ *   tk_orders  — нэг оюутны нэг захиалга (өөрийн 1 + найзуудын 0–2 тасалбар, нийт quantity)
++ *   tk_tickets — захиалга төлөгдмөгц тасалбар бүрт нэг мөр, тус бүр өөрийн QR кодтой
+  */
+ export type OrderStatus = "pending" | "paid" | "cancelled" | "expired";
+ export type PayMethod = "qpay" | "bank";
+ 
++export interface Ticket {
++  code: string;
++  orderRef: string;
++  /** 0 — оюутан өөрөө, 1..n — найз */
++  idx: number;
++  isGuest: boolean;
++  holderName: string | null;
++  holderPhone: string | null;
++  checkedInAt: string | null;
++}
++
+ export interface Order {
+   ref: string;
+   email: string;
+   tier: string;
++  /** Тасалбарын тоо (1 + найзын тоо) */
++  quantity: number;
++  guests: Guest[];
+   amount: number;
+   method: PayMethod;
+   status: OrderStatus;
+   expiresAt: string;
+   createdAt: string;
+   paidAt: string | null;
++  /** Оюутны өөрийнх нь тасалбарын код */
+   ticketCode: string | null;
+   checkedInAt: string | null;
+   confirmedBy: string | null;
+@@ -26,6 +45,8 @@ export interface Order {
+   qpayQrImage: string | null;
+   qpayShortUrl: string | null;
+   qpayUrls: { name: string; description?: string; logo?: string; link: string }[] | null;
++  /** Төлөгдсөн захиалгын бүх тасалбар (оюутан + найзууд) */
++  tickets: Ticket[];
+ }
+ 
+ export interface QpayFields {
+@@ -38,19 +59,20 @@ export interface QpayFields {
+ export interface NewOrder {
+   email: string;
+   tier: string;
++  guests: Guest[];
+   amount: number;
+   method: PayMethod;
+   expiresAt: Date;
+ }
+ 
+-/** Захиалга үүсгэх үеийн хязгаар: ангиллын нийт тоо, нэг оюутны авах тоо */
++/** Захиалга үүсгэх үеийн хязгаар: ангиллын нийт тасалбар, нэг оюутны идэвхтэй захиалгын тоо */
+ export interface OrderLimits {
+   tierQuantity: number;
+-  maxPerEmail: number;
++  maxOrdersPerEmail: number;
+ }
+ 
+ /**
+- * "soldout" — ангилал дууссан, "limit" — оюутан эрхээ ашигласан.
++ * "soldout" — ангилалд хүрэлцэх тасалбар үлдээгүй, "limit" — оюутанд идэвхтэй захиалга байна.
+  * Шалгалт ба бичилт нэг transaction дотор хийгдэх тул зэрэг ирсэн хүсэлтүүд хэтрүүлж зарахгүй.
+  */
+ export type CreateResult = Order | "soldout" | "limit";
+@@ -59,15 +81,17 @@ interface Store {
+   create(o: NewOrder, limits: OrderLimits): Promise<CreateResult>;
+   setQpay(ref: string, q: QpayFields): Promise<void>;
+   getByRef(ref: string): Promise<Order | null>;
+-  getByTicket(code: string): Promise<Order | null>;
++  /** Тасалбарын кодоор тасалбар ба түүний захиалгыг олно */
++  getByTicket(code: string): Promise<{ order: Order; ticket: Ticket } | null>;
+   listByEmail(email: string): Promise<Order[]>;
+   listAll(opts: { status?: string; q?: string; limit?: number }): Promise<Order[]>;
+-  /** Төлөгдсөн болгоно (давтан дуудахад аюулгүй). Шинэчлэгдсэн захиалгыг буцаана */
++  /** Төлөгдсөн болгож тасалбаруудыг гаргана (давтан дуудахад аюулгүй). Шинэчлэгдсэн захиалгыг буцаана */
+   markPaid(ref: string, by: string): Promise<Order | null>;
+   cancel(ref: string): Promise<void>;
+   checkIn(code: string, by: string): Promise<"ok" | "already" | "invalid">;
+-  /** Тухайн ангилалд зарагдсан + хүлээгдэж буй (хугацаа дуусаагүй) тоо */
++  /** Тухайн ангилалд зарагдсан + хүлээгдэж буй (хугацаа дуусаагүй) тасалбарын тоо */
+   countActive(tier: string): Promise<number>;
++  /** Оюутны идэвхтэй захиалгын тоо */
+   countActiveForEmail(email: string): Promise<number>;
+ }
+ 
+@@ -76,7 +100,7 @@ const rand = (n: number) => Array.from(randomBytes(n), (b) => ALPH[b % ALPH.leng
+ export const newRef = () => `UFE-${rand(6)}`;
+ const newTicketCode = () => rand(12);
+ /** Захиалга үүсгэх transaction-уудыг дараалуулах түгжээний түлхүүр (дурын тогтмол тоо) */
+-const ORDER_LOCK_KEY = 2027_1219;
++const ORDER_LOCK_KEY = 2027_1220;
+ 
+ /** Хугацаа дууссан pending захиалгыг "expired" гэж харуулна */
+ const effective = (o: Order): Order =>
+@@ -108,19 +132,50 @@ function pgStore(url: string): Store {
+         qpay_short_url TEXT,
+         qpay_urls JSONB
+       )`;
++      // Найзын тасалбарын өөрчлөлт: хуучин хүснэгтэд багана нэмнэ (хуучин захиалга = 1 тасалбар)
++      await sql`ALTER TABLE tk_orders ADD COLUMN IF NOT EXISTS quantity INTEGER NOT NULL DEFAULT 1`;
++      await sql`ALTER TABLE tk_orders ADD COLUMN IF NOT EXISTS guests JSONB NOT NULL DEFAULT '[]'::jsonb`;
+       await sql`CREATE INDEX IF NOT EXISTS tk_orders_email_idx ON tk_orders(email)`;
+       await sql`CREATE INDEX IF NOT EXISTS tk_orders_tier_idx ON tk_orders(tier, status)`;
++      await sql`CREATE TABLE IF NOT EXISTS tk_tickets (
++        code TEXT PRIMARY KEY,
++        order_ref TEXT NOT NULL REFERENCES tk_orders(ref),
++        idx INTEGER NOT NULL,
++        is_guest BOOLEAN NOT NULL DEFAULT FALSE,
++        holder_name TEXT,
++        holder_phone TEXT,
++        checked_in_at TIMESTAMPTZ,
++        checked_in_by TEXT,
++        UNIQUE (order_ref, idx)
++      )`;
++      // Өмнө нь зарагдсан тасалбаруудыг шинэ хүснэгт рүү хуулна (давтан ажиллахад аюулгүй)
++      await sql`INSERT INTO tk_tickets (code, order_ref, idx, is_guest, checked_in_at, checked_in_by)
++        SELECT ticket_code, ref, 0, FALSE, checked_in_at, checked_in_by FROM tk_orders
++        WHERE status = 'paid' AND ticket_code IS NOT NULL
++        ON CONFLICT DO NOTHING`;
+     })().catch((e) => {
+       ready = null;
+       throw e;
+     }));
+ 
+   const iso = (v: unknown) => (v ? new Date(v as string).toISOString() : null);
+-  const row = (r: Record<string, unknown>): Order =>
+-    effective({
++  const toTicket = (r: Record<string, unknown>): Ticket => ({
++    code: String(r.code),
++    orderRef: String(r.order_ref),
++    idx: Number(r.idx),
++    isGuest: Boolean(r.is_guest),
++    holderName: (r.holder_name as string) ?? null,
++    holderPhone: (r.holder_phone as string) ?? null,
++    checkedInAt: iso(r.checked_in_at),
++  });
++  const row = (r: Record<string, unknown>, tickets: Ticket[] = []): Order => {
++    const own = tickets.find((t) => t.idx === 0);
++    return effective({
+       ref: String(r.ref),
+       email: String(r.email),
+       tier: String(r.tier),
++      quantity: Number(r.quantity ?? 1),
++      guests: (r.guests as Guest[]) ?? [],
+       amount: Number(r.amount),
+       method: r.method as PayMethod,
+       status: r.status as OrderStatus,
+@@ -128,33 +183,49 @@ function pgStore(url: string): Store {
+       createdAt: iso(r.created_at)!,
+       paidAt: iso(r.paid_at),
+       ticketCode: (r.ticket_code as string) ?? null,
+-      checkedInAt: iso(r.checked_in_at),
++      checkedInAt: own?.checkedInAt ?? iso(r.checked_in_at),
+       confirmedBy: (r.confirmed_by as string) ?? null,
+       qpayInvoiceId: (r.qpay_invoice_id as string) ?? null,
+       qpayQrImage: (r.qpay_qr_image as string) ?? null,
+       qpayShortUrl: (r.qpay_short_url as string) ?? null,
+       qpayUrls: (r.qpay_urls as Order["qpayUrls"]) ?? null,
++      tickets,
+     });
++  };
++  /** Захиалгуудын тасалбарыг нэг дор ачаалж хавсаргана */
++  async function withTickets(rows: Record<string, unknown>[]): Promise<Order[]> {
++    const refs = rows.filter((r) => r.status === "paid").map((r) => String(r.ref));
++    const byRef = new Map<string, Ticket[]>();
++    if (refs.length) {
++      const ts = await sql`SELECT * FROM tk_tickets WHERE order_ref = ANY(${refs}::text[]) ORDER BY order_ref, idx`;
++      for (const t of ts.map((x) => toTicket(x as Record<string, unknown>))) {
++        byRef.set(t.orderRef, [...(byRef.get(t.orderRef) ?? []), t]);
++      }
++    }
++    return rows.map((r) => row(r, byRef.get(String(r.ref)) ?? []));
++  }
+   const ACTIVE = `(status = 'paid' OR (status = 'pending' AND expires_at > NOW()))`;
+ 
+   return {
+     async create(o, limits) {
+       await ensure();
++      const quantity = 1 + o.guests.length;
+       // Бүх захиалгыг дарааллаар нь оруулахын тулд transaction-ий түгжээ авна.
+       // Түгжээ авсны дараах INSERT бусад transaction-ий commit хийсэн мөрийг харж тоолно.
+       const [, inserted] = await sql.transaction((tx) => [
+         tx`SELECT pg_advisory_xact_lock(${ORDER_LOCK_KEY})`,
+-        tx`INSERT INTO tk_orders (ref, email, tier, amount, method, expires_at)
+-          SELECT ${newRef()}, ${o.email}, ${o.tier}, ${o.amount}, ${o.method}, ${o.expiresAt.toISOString()}
+-          WHERE (SELECT COUNT(*) FROM tk_orders WHERE tier = ${o.tier}
+-                   AND (status = 'paid' OR (status = 'pending' AND expires_at > NOW()))) < ${limits.tierQuantity}
++        tx`INSERT INTO tk_orders (ref, email, tier, quantity, guests, amount, method, expires_at)
++          SELECT ${newRef()}, ${o.email}, ${o.tier}, ${quantity}, ${JSON.stringify(o.guests)}::jsonb,
++                 ${o.amount}, ${o.method}, ${o.expiresAt.toISOString()}
++          WHERE (SELECT COALESCE(SUM(quantity), 0) FROM tk_orders WHERE tier = ${o.tier}
++                   AND (status = 'paid' OR (status = 'pending' AND expires_at > NOW()))) + ${quantity} <= ${limits.tierQuantity}
+             AND (SELECT COUNT(*) FROM tk_orders WHERE email = ${o.email}
+-                   AND (status = 'paid' OR (status = 'pending' AND expires_at > NOW()))) < ${limits.maxPerEmail}
++                   AND (status = 'paid' OR (status = 'pending' AND expires_at > NOW()))) < ${limits.maxOrdersPerEmail}
+           RETURNING *`,
+       ]);
+       if (inserted[0]) return row(inserted[0] as Record<string, unknown>);
+       // Аль хязгаарт хүрснийг тодорхойлж хэрэглэгчид зөв мессеж өгнө
+-      return (await this.countActiveForEmail(o.email)) >= limits.maxPerEmail ? "limit" : "soldout";
++      return (await this.countActiveForEmail(o.email)) >= limits.maxOrdersPerEmail ? "limit" : "soldout";
+     },
+     async setQpay(ref, q) {
+       await ensure();
+@@ -164,35 +235,52 @@ function pgStore(url: string): Store {
+     async getByRef(ref) {
+       await ensure();
+       const r = await sql`SELECT * FROM tk_orders WHERE ref = ${ref}`;
+-      return r[0] ? row(r[0] as Record<string, unknown>) : null;
++      return r[0] ? (await withTickets(r as Record<string, unknown>[]))[0] : null;
+     },
+     async getByTicket(code) {
+       await ensure();
+-      const r = await sql`SELECT * FROM tk_orders WHERE ticket_code = ${code}`;
+-      return r[0] ? row(r[0] as Record<string, unknown>) : null;
++      const t = await sql`SELECT * FROM tk_tickets WHERE code = ${code}`;
++      if (!t[0]) return null;
++      const ticket = toTicket(t[0] as Record<string, unknown>);
++      const order = await this.getByRef(ticket.orderRef);
++      return order ? { order, ticket } : null;
+     },
+     async listByEmail(email) {
+       await ensure();
+       const r = await sql`SELECT * FROM tk_orders WHERE email = ${email} ORDER BY id DESC LIMIT 20`;
+-      return r.map((x) => row(x as Record<string, unknown>));
++      return withTickets(r as Record<string, unknown>[]);
+     },
+     async listAll({ status, q, limit = 300 }) {
+       await ensure();
+       const like = q ? `%${q.toLowerCase()}%` : null;
+       const r = await sql.query(
+-        `SELECT * FROM tk_orders
++        `SELECT * FROM tk_orders o
+          WHERE ($1::text IS NULL OR status = $1)
+-           AND ($2::text IS NULL OR lower(ref) LIKE $2 OR lower(email) LIKE $2 OR lower(coalesce(ticket_code,'')) LIKE $2)
++           AND ($2::text IS NULL OR lower(ref) LIKE $2 OR lower(email) LIKE $2 OR lower(guests::text) LIKE $2
++                OR EXISTS (SELECT 1 FROM tk_tickets t WHERE t.order_ref = o.ref AND lower(t.code) LIKE $2))
+          ORDER BY id DESC LIMIT $3`,
+         [status ?? null, like, limit],
+       );
+-      return (r as Record<string, unknown>[]).map(row);
++      return withTickets(r as Record<string, unknown>[]);
+     },
+     async markPaid(ref, by) {
+       await ensure();
+-      await sql`UPDATE tk_orders SET status = 'paid', paid_at = NOW(), confirmed_by = ${by},
+-        ticket_code = COALESCE(ticket_code, ${newTicketCode()})
+-        WHERE ref = ${ref} AND status <> 'paid'`;
++      const guestCodes = [newTicketCode(), newTicketCode(), newTicketCode()];
++      await sql.transaction((tx) => [
++        tx`UPDATE tk_orders SET status = 'paid', paid_at = NOW(), confirmed_by = ${by},
++          ticket_code = COALESCE(ticket_code, ${newTicketCode()})
++          WHERE ref = ${ref} AND status <> 'paid'`,
++        // Оюутны өөрийн тасалбар
++        tx`INSERT INTO tk_tickets (code, order_ref, idx, is_guest)
++          SELECT ticket_code, ref, 0, FALSE FROM tk_orders WHERE ref = ${ref} AND status = 'paid'
++          ON CONFLICT DO NOTHING`,
++        // Найз бүрт тусдаа тасалбар
++        tx`INSERT INTO tk_tickets (code, order_ref, idx, is_guest, holder_name, holder_phone)
++          SELECT (${guestCodes}::text[])[g.ord], o.ref, g.ord, TRUE, g.v->>'name', g.v->>'phone'
++          FROM tk_orders o, jsonb_array_elements(o.guests) WITH ORDINALITY AS g(v, ord)
++          WHERE o.ref = ${ref} AND o.status = 'paid'
++          ON CONFLICT DO NOTHING`,
++      ]);
+       return this.getByRef(ref);
+     },
+     async cancel(ref) {
+@@ -201,15 +289,17 @@ function pgStore(url: string): Store {
+     },
+     async checkIn(code, by) {
+       await ensure();
+-      const r = await sql`UPDATE tk_orders SET checked_in_at = NOW(), checked_in_by = ${by}
+-        WHERE ticket_code = ${code} AND status = 'paid' AND checked_in_at IS NULL RETURNING ref`;
++      const r = await sql`UPDATE tk_tickets t SET checked_in_at = NOW(), checked_in_by = ${by}
++        FROM tk_orders o
++        WHERE t.code = ${code} AND t.order_ref = o.ref AND o.status = 'paid' AND t.checked_in_at IS NULL
++        RETURNING t.code`;
+       if (r.length) return "ok";
+-      const o = await this.getByTicket(code);
+-      return o?.status === "paid" ? "already" : "invalid";
++      const found = await this.getByTicket(code);
++      return found?.order.status === "paid" ? "already" : "invalid";
+     },
+     async countActive(tier) {
+       await ensure();
+-      const r = await sql.query(`SELECT COUNT(*) AS n FROM tk_orders WHERE tier = $1 AND ${ACTIVE}`, [tier]);
++      const r = await sql.query(`SELECT COALESCE(SUM(quantity), 0) AS n FROM tk_orders WHERE tier = $1 AND ${ACTIVE}`, [tier]);
+       return Number(r[0]?.n ?? 0);
+     },
+     async countActiveForEmail(email) {
+@@ -226,15 +316,19 @@ function memStore(): Store {
+   const db = (g.__tk ??= []);
+   const find = (ref: string) => db.find((o) => o.ref === ref);
+   const active = (o: Order) => effective(o).status === "paid" || effective(o).status === "pending";
++  const view = (o: Order) => effective({ ...o, checkedInAt: o.tickets.find((t) => t.idx === 0)?.checkedInAt ?? null });
+   return {
+     async create(o, limits) {
+       // Node нэг thread-тэй, энд await байхгүй тул шалгалт ба бичилт салшгүй
+-      if (db.filter((x) => x.email === o.email && active(x)).length >= limits.maxPerEmail) return "limit";
+-      if (db.filter((x) => x.tier === o.tier && active(x)).length >= limits.tierQuantity) return "soldout";
++      const quantity = 1 + o.guests.length;
++      if (db.filter((x) => x.email === o.email && active(x)).length >= limits.maxOrdersPerEmail) return "limit";
++      const used = db.filter((x) => x.tier === o.tier && active(x)).reduce((s, x) => s + x.quantity, 0);
++      if (used + quantity > limits.tierQuantity) return "soldout";
+       const order: Order = {
+-        ref: newRef(), email: o.email, tier: o.tier, amount: o.amount, method: o.method, status: "pending",
+-        expiresAt: o.expiresAt.toISOString(), createdAt: new Date().toISOString(), paidAt: null, ticketCode: null,
+-        checkedInAt: null, confirmedBy: null, qpayInvoiceId: null, qpayQrImage: null, qpayShortUrl: null, qpayUrls: null,
++        ref: newRef(), email: o.email, tier: o.tier, quantity, guests: o.guests, amount: o.amount, method: o.method,
++        status: "pending", expiresAt: o.expiresAt.toISOString(), createdAt: new Date().toISOString(), paidAt: null,
++        ticketCode: null, checkedInAt: null, confirmedBy: null, qpayInvoiceId: null, qpayQrImage: null,
++        qpayShortUrl: null, qpayUrls: null, tickets: [],
+       };
+       db.push(order);
+       return order;
+@@ -245,40 +339,62 @@ function memStore(): Store {
+     },
+     async getByRef(ref) {
+       const o = find(ref);
+-      return o ? effective(o) : null;
++      return o ? view(o) : null;
+     },
+     async getByTicket(code) {
+-      const o = db.find((x) => x.ticketCode === code);
+-      return o ? effective(o) : null;
++      for (const o of db) {
++        const ticket = o.tickets.find((t) => t.code === code);
++        if (ticket) return { order: view(o), ticket };
++      }
++      return null;
+     },
+     async listByEmail(email) {
+-      return db.filter((o) => o.email === email).reverse().map(effective);
++      return db.filter((o) => o.email === email).reverse().map(view);
+     },
+     async listAll({ status, q }) {
+       const s = q?.toLowerCase();
+       return db
+-        .map(effective)
+-        .filter((o) => (!status || o.status === status) && (!s || [o.ref, o.email, o.ticketCode ?? ""].some((v) => v.toLowerCase().includes(s))))
++        .map(view)
++        .filter(
++          (o) =>
++            (!status || o.status === status) &&
++            (!s || [o.ref, o.email, JSON.stringify(o.guests), ...o.tickets.map((t) => t.code)].some((v) => v.toLowerCase().includes(s))),
++        )
+         .reverse();
+     },
+     async markPaid(ref, by) {
+       const o = find(ref);
+-      if (o && o.status !== "paid") Object.assign(o, { status: "paid", paidAt: new Date().toISOString(), confirmedBy: by, ticketCode: o.ticketCode ?? newTicketCode() });
+-      return o ? effective(o) : null;
++      if (o && o.status !== "paid") {
++        const own = o.ticketCode ?? newTicketCode();
++        Object.assign(o, {
++          status: "paid", paidAt: new Date().toISOString(), confirmedBy: by, ticketCode: own,
++          tickets: [
++            { code: own, orderRef: ref, idx: 0, isGuest: false, holderName: null, holderPhone: null, checkedInAt: null },
++            ...o.guests.map((gst, i) => ({
++              code: newTicketCode(), orderRef: ref, idx: i + 1, isGuest: true, holderName: gst.name, holderPhone: gst.phone, checkedInAt: null,
++            })),
++          ],
++        });
++      }
++      return o ? view(o) : null;
+     },
+     async cancel(ref) {
+       const o = find(ref);
+       if (o && o.status !== "paid") o.status = "cancelled";
+     },
+     async checkIn(code) {
+-      const o = db.find((x) => x.ticketCode === code);
+-      if (!o || o.status !== "paid") return "invalid";
+-      if (o.checkedInAt) return "already";
+-      o.checkedInAt = new Date().toISOString();
+-      return "ok";
++      for (const o of db) {
++        const t = o.tickets.find((x) => x.code === code);
++        if (!t) continue;
++        if (o.status !== "paid") return "invalid";
++        if (t.checkedInAt) return "already";
++        t.checkedInAt = new Date().toISOString();
++        return "ok";
++      }
++      return "invalid";
+     },
+     async countActive(tier) {
+-      return db.filter((o) => o.tier === tier && active(o)).length;
++      return db.filter((o) => o.tier === tier && active(o)).reduce((s, o) => s + o.quantity, 0);
+     },
+     async countActiveForEmail(email) {
+       return db.filter((o) => o.email === email && active(o)).length;
+diff --git a/lib/tickets.ts b/lib/tickets.ts
+index 1b819ac..266105e 100644
+--- a/lib/tickets.ts
++++ b/lib/tickets.ts
+@@ -1,6 +1,6 @@
+ import "server-only";
+-import { ticketConfig, getTier, type TicketTier } from "@/data/tickets";
+-import { ticketStore, type Order, type PayMethod } from "./tickets-db";
++import { ticketConfig, getTier, validateGuests, type TicketTier } from "@/data/tickets";
++import { ticketStore, type Order, type PayMethod, type Ticket } from "./tickets-db";
+ import { createInvoice, isInvoicePaid, qpayEnabled } from "./qpay";
+ import { displayName } from "./lostfound";
+ 
+@@ -33,19 +33,26 @@ export class TicketError extends Error {
+   }
+ }
+ 
+-export async function placeOrder(email: string, tierId: string, method: PayMethod, baseUrl: string): Promise<Order> {
++const limitMessage = () =>
++  `Танд идэвхтэй захиалга байна. Өөрийн болон найзуудынхаа тасалбарыг нэг захиалгаар авна. "Миний тасалбар" хэсгээс шалгана уу.`;
++
++export async function placeOrder(
++  email: string,
++  tierId: string,
++  method: PayMethod,
++  guestsInput: unknown,
++  baseUrl: string,
++): Promise<Order> {
+   const tier = getTier(tierId);
+   if (!tier) throw new TicketError("Тасалбарын төрөл олдсонгүй.");
+   if (method === "qpay" && !qpayEnabled()) throw new TicketError("QPay төлбөр одоогоор идэвхгүй байна.");
+   if (method === "bank" && !bankEnabled()) throw new TicketError("Дансаар төлөх боломж одоогоор идэвхгүй байна.");
++  const guests = validateGuests(guestsInput);
++  if (typeof guests === "string") throw new TicketError(guests);
++  const quantity = 1 + guests.length;
+ 
+   const store = ticketStore();
+-  if ((await store.countActiveForEmail(email)) >= ticketConfig.maxPerStudent) {
+-    throw new TicketError(
+-      `Нэг оюутан ${ticketConfig.maxPerStudent} тасалбар авах эрхтэй. "Миний тасалбар" хэсгээс өмнөх захиалгаа шалгана уу.`,
+-      409,
+-    );
+-  }
++  if ((await store.countActiveForEmail(email)) >= ticketConfig.maxOrdersPerStudent) throw new TicketError(limitMessage(), 409);
+   const state = await tierState(tier);
+   if (!state.open) {
+     throw new TicketError(
+@@ -53,22 +60,20 @@ export async function placeOrder(email: string, tierId: string, method: PayMetho
+       409,
+     );
+   }
++  if (state.remaining < quantity) {
++    throw new TicketError(`Энэ ангилалд ${state.remaining} тасалбар л үлдсэн байна. Найзынхаа тоог багасгана уу.`, 409);
++  }
+ 
+   const expiresAt = new Date(
+     Date.now() + (method === "qpay" ? ticketConfig.qpayExpiryMinutes * 60_000 : ticketConfig.bankExpiryHours * 3_600_000),
+   );
+   const created = await store.create(
+-    { email, tier: tier.id, amount: tier.price, method, expiresAt },
+-    { tierQuantity: tier.quantity, maxPerEmail: ticketConfig.maxPerStudent },
++    { email, tier: tier.id, guests, amount: tier.price * quantity, method, expiresAt },
++    { tierQuantity: tier.quantity, maxOrdersPerEmail: ticketConfig.maxOrdersPerStudent },
+   );
+-  // Дээрх шалгалтын дараа өөр хүн сүүлийн тасалбарыг авсан байж болно
+-  if (created === "soldout") throw new TicketError("Энэ ангиллын тасалбар дууссан.", 409);
+-  if (created === "limit") {
+-    throw new TicketError(
+-      `Нэг оюутан ${ticketConfig.maxPerStudent} тасалбар авах эрхтэй. "Миний тасалбар" хэсгээс өмнөх захиалгаа шалгана уу.`,
+-      409,
+-    );
+-  }
++  // Дээрх шалгалтын дараа өөр хүн сүүлийн тасалбаруудыг авсан байж болно
++  if (created === "soldout") throw new TicketError("Энэ ангилалд хүрэлцэх тасалбар үлдээгүй байна.", 409);
++  if (created === "limit") throw new TicketError(limitMessage(), 409);
+   const order = created;
+ 
+   if (method === "qpay") {
+@@ -76,7 +81,7 @@ export async function placeOrder(email: string, tierId: string, method: PayMetho
+       const inv = await createInvoice({
+         ref: order.ref,
+         amount: order.amount,
+-        description: `СЭЗИС NEW YEAR 2027 — ${tier.name} (${order.ref})`,
++        description: `СЭЗИС NEW YEAR 2027 — ${tier.name} x${order.quantity} (${order.ref})`,
+         callbackUrl: `${baseUrl}/api/tickets/qpay/callback?ref=${encodeURIComponent(order.ref)}`,
+       });
+       await store.setQpay(order.ref, inv);
+@@ -105,6 +110,19 @@ export async function syncQpay(order: Order): Promise<Order> {
+   return order;
+ }
+ 
++/** Нэг тасалбарын мэдээлэл (QR тасалбар зурахад) */
++export function ticketDTO(o: Order, t: Ticket) {
++  return {
++    code: t.code,
++    isGuest: t.isGuest,
++    holder: t.isGuest ? (t.holderName ?? "Зочин") : displayName(o.email),
++    /** Найзын тасалбар бол урьсан оюутан */
++    invitedBy: t.isGuest ? displayName(o.email) : null,
++    checkedInAt: t.checkedInAt,
++  };
++}
++export type TicketDTO = ReturnType<typeof ticketDTO>;
++
+ /** Хэрэглэгчид буцаах захиалгын мэдээлэл */
+ export function orderDTO(o: Order) {
+   const tier = getTier(o.tier);
+@@ -112,13 +130,17 @@ export function orderDTO(o: Order) {
+     ref: o.ref,
+     tier: o.tier,
+     tierName: tier?.name ?? o.tier,
++    quantity: o.quantity,
++    guests: o.guests.map((g) => g.name),
+     amount: o.amount,
++    unitPrice: tier?.price ?? Math.round(o.amount / o.quantity),
+     method: o.method,
+     status: o.status,
+     expiresAt: o.expiresAt,
+     createdAt: o.createdAt,
+     paidAt: o.paidAt,
+     ticketCode: o.status === "paid" ? o.ticketCode : null,
++    tickets: o.status === "paid" ? o.tickets.map((t) => ticketDTO(o, t)) : [],
+     checkedInAt: o.checkedInAt,
+     holder: displayName(o.email),
+     qpay:
+-- 
+2.43.0
+
