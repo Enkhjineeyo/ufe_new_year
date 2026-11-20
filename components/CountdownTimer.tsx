@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { Sparkles } from "lucide-react";
 
 interface CountdownTimerProps {
-  /** ISO огноо, цагийн бүстэй: "2026-12-19T18:00:00+08:00" */
+  /** ISO огноо, цагийн бүстэй: "2026-12-20T18:00:00+08:00" */
   target: string;
   startedMessage: string;
 }

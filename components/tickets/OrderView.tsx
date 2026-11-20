@@ -10,13 +10,17 @@ export interface OrderDTO {
   ref: string;
   tier: string;
   tierName: string;
+  quantity: number;
+  guests: string[];
   amount: number;
+  unitPrice: number;
   method: "qpay" | "bank";
   status: "pending" | "paid" | "cancelled" | "expired";
   expiresAt: string;
   ticketCode: string | null;
   checkedInAt: string | null;
   holder: string;
+  tickets: { code: string; isGuest: boolean; holder: string; invitedBy: string | null; checkedInAt: string | null }[];
   qpay: { qrImage: string | null; shortUrl: string | null; urls: { name: string; description?: string; logo?: string; link: string }[] } | null;
   bank: { bankName: string; accountNumber: string; accountName: string; iban: string; description: string } | null;
 }
@@ -85,11 +89,17 @@ export default function OrderView({ initial, devMock }: { initial: OrderDTO; dev
     }
   }
 
-  if (order.status === "paid" && order.ticketCode) {
+  if (order.status === "paid" && order.tickets.length > 0) {
     return (
       <div>
-        <p className="mb-6 text-center text-sm text-emerald-300">✓ Төлбөр баталгаажлаа. Таны тасалбар бэлэн!</p>
-        <TicketCard tierName={order.tierName} holder={order.holder} ref_={order.ref} ticketCode={order.ticketCode} checkedInAt={order.checkedInAt} />
+        <p className="mb-6 text-center text-sm text-emerald-300">
+          ✓ Төлбөр баталгаажлаа. {order.tickets.length > 1 ? `${order.tickets.length} тасалбар бэлэн! Найзуудынхаа тасалбарыг тус бүрд нь илгээгээрэй.` : "Таны тасалбар бэлэн!"}
+        </p>
+        <div className="space-y-6">
+          {order.tickets.map((t) => (
+            <TicketCard key={t.code} tierName={order.tierName} holder={t.holder} invitedBy={t.invitedBy} ref_={order.ref} ticketCode={t.code} checkedInAt={t.checkedInAt} />
+          ))}
+        </div>
       </div>
     );
   }
@@ -115,6 +125,11 @@ export default function OrderView({ initial, devMock }: { initial: OrderDTO; dev
         <div>
           <p className="text-[0.62rem] font-semibold tracking-[0.3em] text-silver/60">{order.tierName} · {order.ref}</p>
           <p className="mt-1 font-display text-3xl font-bold text-white">{formatMNT(order.amount)}</p>
+          {order.quantity > 1 && (
+            <p className="mt-1 text-xs text-silver/70">
+              {order.quantity} × {formatMNT(order.unitPrice)} · Өөрөө + {order.guests.join(", ")}
+            </p>
+          )}
         </div>
         <p className="text-xs text-silver/70">Хүчинтэй: <span className="font-semibold text-white">{left}</span></p>
       </div>

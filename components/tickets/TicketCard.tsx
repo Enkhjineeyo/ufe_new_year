@@ -8,17 +8,24 @@ interface Props {
   ref_: string;
   ticketCode: string;
   checkedInAt?: string | null;
+  /** Найзын тасалбар бол урьсан оюутан */
+  invitedBy?: string | null;
 }
 
 /** QR тасалбар — хаалган дээр үзүүлнэ */
-export default function TicketCard({ tierName, holder, ref_, ticketCode, checkedInAt }: Props) {
+export default function TicketCard({ tierName, holder, ref_, ticketCode, checkedInAt, invitedBy }: Props) {
   return (
     <article className="relative mx-auto w-full max-w-sm overflow-hidden rounded-3xl border border-silver/20 bg-gradient-to-b from-ink to-night shadow-[0_30px_80px_-30px_rgba(83,109,255,0.7)]">
       <div className="absolute -right-16 -top-16 h-48 w-48 rounded-full bg-electric/25 blur-3xl" aria-hidden="true" />
       <div className="relative p-6 text-center">
         <div className="flex items-center justify-between">
           <PaperStar size={26} />
-          <span className="rounded-full bg-electric px-3 py-1 font-display text-[0.62rem] font-bold tracking-[0.2em] text-white">{tierName}</span>
+          <span className="flex gap-1.5">
+            {invitedBy && (
+              <span className="rounded-full bg-amber-400/20 px-3 py-1 font-display text-[0.62rem] font-bold tracking-[0.2em] text-amber-200">ЗОЧИН</span>
+            )}
+            <span className="rounded-full bg-electric px-3 py-1 font-display text-[0.62rem] font-bold tracking-[0.2em] text-white">{tierName}</span>
+          </span>
         </div>
         <h2 className="chrome-text mt-5 font-display text-2xl font-bold leading-tight">{siteConfig.title}</h2>
         <p className="mt-1 font-display text-[0.6rem] tracking-[0.3em] text-silver/70">{siteConfig.tagline}</p>
@@ -41,12 +48,15 @@ export default function TicketCard({ tierName, holder, ref_, ticketCode, checked
         ) : null}
         <dl className="mt-5 space-y-2 text-left text-xs text-silver">
           <div className="flex justify-between gap-3"><dt className="text-silver/55">Эзэмшигч</dt><dd className="font-semibold text-white">{holder}</dd></div>
+          {invitedBy && <div className="flex justify-between gap-3"><dt className="text-silver/55">Урьсан</dt><dd className="text-white">{invitedBy}</dd></div>}
           <div className="flex justify-between gap-3"><dt className="text-silver/55">Захиалга</dt><dd className="font-mono text-white">{ref_}</dd></div>
           <div className="flex justify-between gap-3"><dt className="inline-flex items-center gap-1.5 text-silver/55"><CalendarDays className="h-3.5 w-3.5" />Огноо</dt><dd className="text-white">{siteConfig.dateShort} · {siteConfig.timeLabel}</dd></div>
           <div className="flex justify-between gap-3"><dt className="inline-flex items-center gap-1.5 text-silver/55"><MapPin className="h-3.5 w-3.5" />Байршил</dt><dd className="text-right text-white">{siteConfig.venue}</dd></div>
         </dl>
         <p className="mt-5 text-[0.68rem] leading-relaxed text-silver/55">
-          Хаалган дээр энэ QR-ийг үзүүлнэ. Screenshot хийж хадгалаарай. QR-ээ бусдад бүү дамжуулаарай — нэг удаа л уншигдана.
+          {invitedBy
+            ? "Энэ тасалбарыг найздаа screenshot хийж илгээгээрэй. Хаалган дээр QR-ийг уншуулж, иргэний үнэмлэхээр нэрийг тулгана. Нэг удаа л уншигдана."
+            : "Хаалган дээр энэ QR-ийг үзүүлнэ. Screenshot хийж хадгалаарай. QR-ээ бусдад бүү дамжуулаарай, нэг удаа л уншигдана."}
         </p>
       </div>
     </article>

@@ -6,7 +6,8 @@ import { api } from "@/lib/client-utils";
 import { formatMNT } from "@/data/tickets";
 
 type Row = {
-  ref: string; email: string; tier: string; amount: number; method: "qpay" | "bank"; status: string;
+  ref: string; email: string; tier: string; quantity: number; guests: { name: string; phone: string }[];
+  tickets: { code: string; holder: string | null; checkedInAt: string | null }[]; amount: number; method: "qpay" | "bank"; status: string;
   createdAt: string; paidAt: string | null; ticketCode: string | null; checkedInAt: string | null; confirmedBy: string | null;
 };
 type Stat = { tier: string; name: string; quantity: number; paid: number; pending: number; checkedIn: number; revenue: number };
@@ -127,13 +128,22 @@ export default function AdminDashboard() {
               {rows.map((r) => (
                 <tr key={r.ref} className="border-t border-white/[0.06] text-silver">
                   <td className="p-3 font-mono text-white">{r.ref}</td>
-                  <td className="p-3">{r.email}</td>
-                  <td className="p-3 uppercase">{r.tier}</td>
+                  <td className="p-3">
+                    {r.email}
+                    {r.guests.map((g) => (
+                      <span key={g.phone + g.name} className="block text-xs text-amber-200/80">+ {g.name} · {g.phone}</span>
+                    ))}
+                  </td>
+                  <td className="p-3 uppercase">{r.tier}{r.quantity > 1 && <span className="ml-1 normal-case text-white">×{r.quantity}</span>}</td>
                   <td className="p-3">{formatMNT(r.amount)}</td>
                   <td className="p-3">{r.method === "qpay" ? "QPay" : "Данс"}</td>
                   <td className="p-3">
                     <span className={`rounded-full px-2.5 py-1 text-[0.65rem] font-semibold ${COLOR[r.status]}`}>{STATUS[r.status]}</span>
-                    {r.checkedInAt && <span className="ml-1 text-[0.65rem] text-emerald-300">· орсон</span>}
+                    {r.tickets.some((t) => t.checkedInAt) && (
+                      <span className="ml-1 text-[0.65rem] text-emerald-300">
+                        · {r.tickets.filter((t) => t.checkedInAt).length}/{r.tickets.length} орсон
+                      </span>
+                    )}
                   </td>
                   <td className="p-3 text-xs">{fmt(r.createdAt)}</td>
                   <td className="p-3">
@@ -151,9 +161,11 @@ export default function AdminDashboard() {
                           <X className="h-3.5 w-3.5" />
                         </button>
                       )}
-                      {r.ticketCode && (
-                        <a href={`/t/${r.ticketCode}`} className="rounded-full border border-white/15 px-3 py-1.5 text-xs">Тасалбар</a>
-                      )}
+                      {r.tickets.map((t, i) => (
+                        <a key={t.code} href={`/t/${t.code}`} title={t.holder ?? ""} className="rounded-full border border-white/15 px-3 py-1.5 text-xs">
+                          {i === 0 ? "Тасалбар" : `Зочин ${i}`}
+                        </a>
+                      ))}
                     </div>
                   </td>
                 </tr>

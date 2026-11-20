@@ -91,7 +91,7 @@ export default function TicketsSection() {
           })}
         </ul>
         <p className="mt-8 text-center text-xs text-silver/60">
-          Нэг оюутан {ticketConfig.maxPerStudent} тасалбар авах эрхтэй · Зөвхөн @ufe.edu.mn майлтай оюутан
+          СЭЗИС-ийн оюутан @ufe.edu.mn майлаараа нэвтэрч, өөртөө болон {ticketConfig.maxGuests} хүртэлх найздаа тасалбар авна
         </p>
       </div>
     </section>

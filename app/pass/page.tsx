@@ -25,7 +25,7 @@ export default async function PassPage() {
   } catch (e) {
     console.error(e);
   }
-  const paid = orders.filter((o) => o.status === "paid" && o.ticketCode);
+  const paid = orders.filter((o) => o.status === "paid" && o.tickets.length > 0);
   const pending = orders.filter((o) => o.status === "pending");
 
   return (
@@ -69,14 +69,16 @@ export default async function PassPage() {
 
         <section className="mt-10" aria-labelledby="my-tickets">
           <h2 id="my-tickets" className="mb-4 text-center font-display text-xs font-semibold tracking-[0.3em] text-silver/70">МИНИЙ ТАСАЛБАР</h2>
-          {paid.map((o) => (
-            <div key={o.ref} className="mb-6">
-              <TicketCard tierName={o.tierName} holder={o.holder} ref_={o.ref} ticketCode={o.ticketCode!} checkedInAt={o.checkedInAt} />
-            </div>
-          ))}
+          {paid.flatMap((o) =>
+            o.tickets.map((t) => (
+              <div key={t.code} className="mb-6">
+                <TicketCard tierName={o.tierName} holder={t.holder} invitedBy={t.invitedBy} ref_={o.ref} ticketCode={t.code} checkedInAt={t.checkedInAt} />
+              </div>
+            )),
+          )}
           {pending.map((o) => (
             <a key={o.ref} href={`/orders/${o.ref}`} className="mb-3 flex items-center justify-between rounded-2xl border border-amber-400/30 bg-amber-400/10 p-4 text-sm">
-              <span className="text-white">{o.tierName} · {formatMNT(o.amount)} <span className="ml-1 font-mono text-xs text-silver/70">{o.ref}</span></span>
+              <span className="text-white">{o.tierName}{o.quantity > 1 ? ` ×${o.quantity}` : ""} · {formatMNT(o.amount)} <span className="ml-1 font-mono text-xs text-silver/70">{o.ref}</span></span>
               <span className="text-xs font-semibold text-amber-300">Төлбөр хүлээгдэж буй →</span>
             </a>
           ))}

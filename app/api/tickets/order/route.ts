@@ -13,11 +13,11 @@ export async function POST(req: NextRequest) {
   if (!email) return jsonError("Тасалбар авахын тулд нэвтэрнэ үү.", 401);
   const missing = dbMissing();
   if (missing) return missing;
-  const body = (await req.json().catch(() => ({}))) as { tier?: string; method?: string };
+  const body = (await req.json().catch(() => ({}))) as { tier?: string; method?: string; guests?: unknown };
   const method = body.method === "qpay" || body.method === "bank" ? body.method : null;
   if (!method || !body.tier) return jsonError("Тасалбар болон төлбөрийн хэлбэрээ сонгоно уу.", 400);
   try {
-    const order = await placeOrder(email, body.tier, method, getBaseUrl(req.nextUrl.origin));
+    const order = await placeOrder(email, body.tier, method, body.guests, getBaseUrl(req.nextUrl.origin));
     return NextResponse.json({ order: orderDTO(order) }, { status: 201 });
   } catch (e) {
     if (e instanceof TicketError) return jsonError(e.message, e.status);

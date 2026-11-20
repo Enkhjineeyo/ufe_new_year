@@ -20,8 +20,10 @@ export interface TicketTier {
 
 export const ticketConfig = {
   currency: "₮",
-  /** Нэг оюутан нийт хэдэн тасалбар авах эрхтэй */
-  maxPerStudent: 1,
+  /** Нэг оюутан хэдэн идэвхтэй захиалгатай байж болох (өөрийн + найзуудын тасалбар нэг захиалгад) */
+  maxOrdersPerStudent: 1,
+  /** Оюутан өөртөө 1 тасалбар + хамгийн ихдээ хэдэн найздаа тасалбар авч болох */
+  maxGuests: 2,
   /** QPay нэхэмжлэл хүчинтэй хугацаа (минут) */
   qpayExpiryMinutes: 30,
   /** Дансаар шилжүүлэх захиалгыг хүлээх хугацаа (цаг) */
@@ -58,13 +60,37 @@ export const ticketConfig = {
    * Гүйлгээний утгад захиалгын код (жш: UFE-7K3Q9M) бичүүлнэ.
    */
   bank: {
-    bankName: "",
-    accountNumber: "",
-    accountName: "",
-    iban: "",
+    bankName: "Хаан банк",
+    accountNumber: "5175335963",
+    accountName: "Баттулга Энхжин",
+    iban: "MN650005005175335963",
   },
 };
 
-export const getTier = (id: string) => ticketConfig.tiers.find((t) => t.id === id) as TicketTier | undefined;
+/** Нэг захиалгад авах дээд тоо: оюутан өөрөө + найзууд */
+export const maxTicketsPerOrder = 1 + ticketConfig.maxGuests;
+
+export interface Guest {
+  name: string;
+  phone: string;
+}
+
+/** Найзын мэдээллийг шалгаж цэвэрлэнэ. Алдаатай бол мессеж буцаана. */
+export function validateGuests(input: unknown): Guest[] | string {
+  if (input == null) return [];
+  if (!Array.isArray(input)) return "Найзын мэдээлэл буруу байна.";
+  if (input.length > ticketConfig.maxGuests) return `Хамгийн ихдээ ${ticketConfig.maxGuests} найзтайгаа ирэх боломжтой.`;
+  const out: Guest[] = [];
+  for (const [i, g] of input.entries()) {
+    const name = String((g as Guest)?.name ?? "").trim().replace(/\s+/g, " ");
+    const phone = String((g as Guest)?.phone ?? "").replace(/[\s-]/g, "");
+    if (name.length < 2 || name.length > 60) return `${i + 1}-р найзын овог нэрийг бичнэ үү.`;
+    if (!/^\+?\d{8,12}$/.test(phone)) return `${i + 1}-р найзын утасны дугаар буруу байна (8 оронтой).`;
+    out.push({ name, phone });
+  }
+  return out;
+}
+
+export const getTier =(id: string) => ticketConfig.tiers.find((t) => t.id === id) as TicketTier | undefined;
 
 export const formatMNT = (n: number) => `${n.toLocaleString("en-US")}${ticketConfig.currency}`;

@@ -22,9 +22,10 @@ export async function GET(req: NextRequest) {
       tier: t.id,
       name: t.name,
       quantity: t.quantity,
-      paid: paid.length,
-      pending: all.filter((o) => o.tier === t.id && o.status === "pending").length,
-      checkedIn: paid.filter((o) => o.checkedInAt).length,
+      // Тоо бүгд тасалбараар (нэг захиалгад 1–3 тасалбар)
+      paid: paid.reduce((s, o) => s + o.quantity, 0),
+      pending: all.filter((o) => o.tier === t.id && o.status === "pending").reduce((s, o) => s + o.quantity, 0),
+      checkedIn: paid.reduce((s, o) => s + o.tickets.filter((x) => x.checkedInAt).length, 0),
       revenue: paid.reduce((s, o) => s + o.amount, 0),
     };
   });
@@ -32,7 +33,9 @@ export async function GET(req: NextRequest) {
     {
       stats,
       orders: orders.map((o) => ({
-        ref: o.ref, email: o.email, tier: o.tier, amount: o.amount, method: o.method, status: o.status,
+        ref: o.ref, email: o.email, tier: o.tier, quantity: o.quantity, amount: o.amount,
+        guests: o.guests,
+        tickets: o.tickets.map((x) => ({ code: x.code, holder: x.isGuest ? x.holderName : o.email, checkedInAt: x.checkedInAt })), method: o.method, status: o.status,
         createdAt: o.createdAt, paidAt: o.paidAt, ticketCode: o.ticketCode, checkedInAt: o.checkedInAt, confirmedBy: o.confirmedBy,
       })),
     },

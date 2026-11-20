@@ -1,6 +1,6 @@
 import "server-only";
-import { ticketConfig, getTier, type TicketTier } from "@/data/tickets";
-import { ticketStore, type Order, type PayMethod } from "./tickets-db";
+import { ticketConfig, getTier, validateGuests, type TicketTier } from "@/data/tickets";
+import { ticketStore, type Order, type PayMethod, type Ticket } from "./tickets-db";
 import { createInvoice, isInvoicePaid, qpayEnabled } from "./qpay";
 import { displayName } from "./lostfound";
 
@@ -33,19 +33,26 @@ export class TicketError extends Error {
   }
 }
 
-export async function placeOrder(email: string, tierId: string, method: PayMethod, baseUrl: string): Promise<Order> {
+const limitMessage = () =>
+  `Танд идэвхтэй захиалга байна. Өөрийн болон найзуудынхаа тасалбарыг нэг захиалгаар авна. "Миний тасалбар" хэсгээс шалгана уу.`;
+
+export async function placeOrder(
+  email: string,
+  tierId: string,
+  method: PayMethod,
+  guestsInput: unknown,
+  baseUrl: string,
+): Promise<Order> {
   const tier = getTier(tierId);
   if (!tier) throw new TicketError("Тасалбарын төрөл олдсонгүй.");
   if (method === "qpay" && !qpayEnabled()) throw new TicketError("QPay төлбөр одоогоор идэвхгүй байна.");
   if (method === "bank" && !bankEnabled()) throw new TicketError("Дансаар төлөх боломж одоогоор идэвхгүй байна.");
+  const guests = validateGuests(guestsInput);
+  if (typeof guests === "string") throw new TicketError(guests);
+  const quantity = 1 + guests.length;
 
   const store = ticketStore();
-  if ((await store.countActiveForEmail(email)) >= ticketConfig.maxPerStudent) {
-    throw new TicketError(
-      `Нэг оюутан ${ticketConfig.maxPerStudent} тасалбар авах эрхтэй. "Миний тасалбар" хэсгээс өмнөх захиалгаа шалгана уу.`,
-      409,
-    );
-  }
+  if ((await store.countActiveForEmail(email)) >= ticketConfig.maxOrdersPerStudent) throw new TicketError(limitMessage(), 409);
   const state = await tierState(tier);
   if (!state.open) {
     throw new TicketError(
@@ -53,18 +60,28 @@ export async function placeOrder(email: string, tierId: string, method: PayMetho
       409,
     );
   }
+  if (state.remaining < quantity) {
+    throw new TicketError(`Энэ ангилалд ${state.remaining} тасалбар л үлдсэн байна. Найзынхаа тоог багасгана уу.`, 409);
+  }
 
   const expiresAt = new Date(
     Date.now() + (method === "qpay" ? ticketConfig.qpayExpiryMinutes * 60_000 : ticketConfig.bankExpiryHours * 3_600_000),
   );
-  const order = await store.create({ email, tier: tier.id, amount: tier.price, method, expiresAt });
+  const created = await store.create(
+    { email, tier: tier.id, guests, amount: tier.price * quantity, method, expiresAt },
+    { tierQuantity: tier.quantity, maxOrdersPerEmail: ticketConfig.maxOrdersPerStudent },
+  );
+  // Дээрх шалгалтын дараа өөр хүн сүүлийн тасалбаруудыг авсан байж болно
+  if (created === "soldout") throw new TicketError("Энэ ангилалд хүрэлцэх тасалбар үлдээгүй байна.", 409);
+  if (created === "limit") throw new TicketError(limitMessage(), 409);
+  const order = created;
 
   if (method === "qpay") {
     try {
       const inv = await createInvoice({
         ref: order.ref,
         amount: order.amount,
-        description: `СЭЗИС NEW YEAR 2027 — ${tier.name} (${order.ref})`,
+        description: `СЭЗИС NEW YEAR 2027 — ${tier.name} x${order.quantity} (${order.ref})`,
         callbackUrl: `${baseUrl}/api/tickets/qpay/callback?ref=${encodeURIComponent(order.ref)}`,
       });
       await store.setQpay(order.ref, inv);
@@ -80,7 +97,9 @@ export async function placeOrder(email: string, tierId: string, method: PayMetho
 /** QPay захиалгын төлбөрийг шалгаад төлөгдсөн бол тасалбар гаргана */
 export async function syncQpay(order: Order): Promise<Order> {
   if (order.method !== "qpay" || !order.qpayInvoiceId) return order;
-  if (order.status !== "pending" && order.status !== "expired") return order;
+  // Цуцалсан/хугацаа дууссан захиалгын QPay нэхэмжлэлийг хүн төлчихсөн байж болно.
+  // Мөнгө орсон бол тасалбар гаргана, эс бөгөөс төлсөн хүн тасалбаргүй үлдэнэ.
+  if (order.status === "paid") return order;
   try {
     if (await isInvoicePaid(order.qpayInvoiceId, order.amount)) {
       return (await ticketStore().markPaid(order.ref, "qpay"))!;
@@ -91,6 +110,19 @@ export async function syncQpay(order: Order): Promise<Order> {
   return order;
 }
 
+/** Нэг тасалбарын мэдээлэл (QR тасалбар зурахад) */
+export function ticketDTO(o: Order, t: Ticket) {
+  return {
+    code: t.code,
+    isGuest: t.isGuest,
+    holder: t.isGuest ? (t.holderName ?? "Зочин") : displayName(o.email),
+    /** Найзын тасалбар бол урьсан оюутан */
+    invitedBy: t.isGuest ? displayName(o.email) : null,
+    checkedInAt: t.checkedInAt,
+  };
+}
+export type TicketDTO = ReturnType<typeof ticketDTO>;
+
 /** Хэрэглэгчид буцаах захиалгын мэдээлэл */
 export function orderDTO(o: Order) {
   const tier = getTier(o.tier);
@@ -98,13 +130,17 @@ export function orderDTO(o: Order) {
     ref: o.ref,
     tier: o.tier,
     tierName: tier?.name ?? o.tier,
+    quantity: o.quantity,
+    guests: o.guests.map((g) => g.name),
     amount: o.amount,
+    unitPrice: tier?.price ?? Math.round(o.amount / o.quantity),
     method: o.method,
     status: o.status,
     expiresAt: o.expiresAt,
     createdAt: o.createdAt,
     paidAt: o.paidAt,
     ticketCode: o.status === "paid" ? o.ticketCode : null,
+    tickets: o.status === "paid" ? o.tickets.map((t) => ticketDTO(o, t)) : [],
     checkedInAt: o.checkedInAt,
     holder: displayName(o.email),
     qpay:

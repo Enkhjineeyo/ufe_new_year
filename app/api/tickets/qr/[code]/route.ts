@@ -12,7 +12,9 @@ export const dynamic = "force-dynamic";
 export async function GET(req: NextRequest, ctx: { params: Promise<{ code: string }> }) {
   const email = await getSessionEmail();
   const code = (await ctx.params).code.toUpperCase();
-  const order = await ticketStore().getByTicket(code);
+  const found = await ticketStore().getByTicket(code);
+  const order = found?.order;
+  // Найзын тасалбарыг ч захиалсан оюутан харж, найздаа дамжуулна
   if (!email || !order || order.status !== "paid" || (order.email !== email && !isAdmin(email))) {
     return new Response("Not found", { status: 404 });
   }

@@ -52,7 +52,7 @@ export default async function BuyPage({ searchParams }: { searchParams: Promise<
         <div className="glass mt-8 rounded-3xl p-6 sm:p-8">
           {setupError ? (
             <p className="text-center text-sm leading-relaxed text-amber-200">{setupError}</p>
-          ) : mine.length >= ticketConfig.maxPerStudent ? (
+          ) : mine.length >= ticketConfig.maxOrdersPerStudent ? (
             <div className="text-center">
               <p className="text-sm text-silver">Танд идэвхтэй захиалга байна.</p>
               <a href={`/orders/${mine[0].ref}`} className="mt-4 inline-block rounded-full bg-electric px-6 py-3 font-display text-xs font-semibold tracking-[0.2em] text-white">
@@ -62,7 +62,7 @@ export default async function BuyPage({ searchParams }: { searchParams: Promise<
           ) : !state.open ? (
             <p className="text-center text-sm text-silver">Энэ ангиллын тасалбар одоогоор зарагдахгүй байна.</p>
           ) : (
-            <BuyForm tier={tier.id} methods={methods} />
+            <BuyForm tier={tier.id} price={tier.price} maxGuests={Math.max(0, Math.min(ticketConfig.maxGuests, state.remaining - 1))} methods={methods} />
           )}
         </div>
       </AuthShell>
