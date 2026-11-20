@@ -61,10 +61,11 @@ export default function Navbar() {
         <div className="flex items-center gap-2">
         <a
           href={loggedIn ? "/pass" : "/login"}
+          aria-label={loggedIn ? "Миний тасалбар" : "Нэвтрэх"}
           className="inline-flex items-center gap-2 whitespace-nowrap rounded-full border border-electric/50 bg-electric/15 px-4 py-2 text-[0.65rem] font-semibold tracking-[0.18em] text-white transition-colors hover:bg-electric"
         >
           {loggedIn ? <Ticket className="h-3.5 w-3.5" aria-hidden="true" /> : <LogIn className="h-3.5 w-3.5" aria-hidden="true" />}
-          {loggedIn ? "МИНИЙ ТАСАЛБАР" : "НЭВТРЭХ"}
+          <span className={loggedIn ? "hidden min-[440px]:inline" : ""}>{loggedIn ? "МИНИЙ ТАСАЛБАР" : "НЭВТРЭХ"}</span>
         </a>
         <button
           type="button"

@@ -1,13 +1,15 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getStore, type PostKind } from "@/lib/db";
 import { getSessionEmail } from "@/lib/session";
-import { LIMITS, PAGE_SIZE, badOrigin, clean, jsonError, toPostDTO } from "@/lib/lostfound";
+import { LIMITS, PAGE_SIZE, badOrigin, clean, dbMissing, jsonError, toPostDTO } from "@/lib/lostfound";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /** GET /api/lost-found?before=<id>&kind=lost|found — хамгийн сүүлийн 5 пост */
 export async function GET(req: NextRequest) {
+  const missing = dbMissing();
+  if (missing) return missing;
   const viewer = await getSessionEmail();
   const beforeRaw = Number(req.nextUrl.searchParams.get("before"));
   const before = Number.isSafeInteger(beforeRaw) && beforeRaw > 0 ? beforeRaw : undefined;
@@ -36,6 +38,8 @@ export async function POST(req: NextRequest) {
   if (blocked) return blocked;
   const email = await getSessionEmail();
   if (!email) return jsonError("Пост оруулахын тулд нэвтэрнэ үү.", 401);
+  const missing = dbMissing();
+  if (missing) return missing;
 
   let data: Record<string, unknown>;
   try {

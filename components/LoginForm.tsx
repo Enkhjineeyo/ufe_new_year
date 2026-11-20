@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { Mail, ArrowRight, Loader2, MailCheck, AlertCircle } from "lucide-react";
 
 interface LoginFormProps {
@@ -18,6 +18,30 @@ export default function LoginForm({ placeholder, domains, initialError, next }: 
   const [email, setEmail] = useState("");
   const [loading, setLoading] = useState(false);
   const [state, setState] = useState<State>({ step: "form", error: initialError });
+
+  // Майл дээрх холбоос (өөр таб эсвэл утсан дээр) дарагдмагц ЭНЭ цонх автоматаар нэвтэрнэ
+  useEffect(() => {
+    if (state.step !== "sent") return;
+    let stop = false;
+    const tick = async () => {
+      try {
+        const r = await fetch("/api/auth/poll", { cache: "no-store" });
+        const d = (await r.json()) as { ok?: boolean };
+        if (d.ok && !stop) {
+          stop = true;
+          window.location.assign(next ?? "/pass");
+        }
+      } catch {}
+    };
+    const id = window.setInterval(tick, 2500);
+    const onFocus = () => tick();
+    window.addEventListener("focus", onFocus);
+    return () => {
+      stop = true;
+      window.clearInterval(id);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [state.step, next]);
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
@@ -52,6 +76,10 @@ export default function LoginForm({ placeholder, domains, initialError, next }: 
         <p className="mt-3 text-sm leading-relaxed text-silver">
           <span className="font-semibold text-white">{state.sentTo}</span> хаяг руу нэвтрэх холбоос илгээлээ.
           Outlook-оо нээгээд <b className="text-white">“НЭВТРЭХ”</b> товч дээр дарна уу. Junk/Spam хавтсаа ч шалгаарай.
+        </p>
+        <p className="mt-4 inline-flex items-center gap-2 rounded-full bg-white/5 px-4 py-2 text-xs text-silver">
+          <Loader2 className="h-3.5 w-3.5 animate-spin text-electric" aria-hidden="true" />
+          Холбоос дарагдмагц энэ цонх автоматаар нэвтэрнэ
         </p>
         {state.devLink && (
           <a href={state.devLink} className="mt-5 block break-all rounded-lg border border-dashed border-electric/50 p-3 text-xs text-electric">

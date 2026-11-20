@@ -14,7 +14,7 @@ export default async function OrderPage({ params }: { params: Promise<{ ref: str
   const ref = (await params).ref.toUpperCase();
   const email = await getSessionEmail();
   if (!email) redirect(`/login?next=${encodeURIComponent(`/orders/${ref}`)}`);
-  let order = await ticketStore().getByRef(ref);
+  let order = await ticketStore().getByRef(ref).catch(() => null);
   if (!order || (order.email !== email && !isAdmin(email))) notFound();
   order = await syncQpay(order);
   return (

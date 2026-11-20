@@ -20,8 +20,20 @@ export default async function BuyPage({ searchParams }: { searchParams: Promise<
   const email = await getSessionEmail();
   if (!email) redirect(`/login?next=${encodeURIComponent(`/tickets/buy?tier=${tier.id}`)}`);
 
-  const mine = (await ticketStore().listByEmail(email)).filter((o) => o.status === "paid" || o.status === "pending");
-  const state = await tierState(tier);
+  let setupError: string | null = null;
+  let mine: Awaited<ReturnType<ReturnType<typeof ticketStore>["listByEmail"]>> = [];
+  let state: Awaited<ReturnType<typeof tierState>> = { open: false, remaining: 0 };
+  try {
+    mine = (await ticketStore().listByEmail(email)).filter((o) => o.status === "paid" || o.status === "pending");
+    state = await tierState(tier);
+  } catch (e) {
+    console.error(e);
+    setupError = "Тасалбарын систем хараахан бэлэн болоогүй байна (өгөгдлийн сан холбогдоогүй). Удахгүй дахин оролдоно уу.";
+  }
+  const methods = { qpay: qpayEnabled(), bank: bankEnabled() };
+  if (!setupError && !methods.qpay && !methods.bank) {
+    setupError = "Төлбөрийн хэлбэр (QPay / данс) хараахан тохируулагдаагүй байна. Удахгүй нээгдэнэ.";
+  }
 
   return (
     <>
@@ -38,7 +50,9 @@ export default async function BuyPage({ searchParams }: { searchParams: Promise<
           ))}
         </ul>
         <div className="glass mt-8 rounded-3xl p-6 sm:p-8">
-          {mine.length >= ticketConfig.maxPerStudent ? (
+          {setupError ? (
+            <p className="text-center text-sm leading-relaxed text-amber-200">{setupError}</p>
+          ) : mine.length >= ticketConfig.maxPerStudent ? (
             <div className="text-center">
               <p className="text-sm text-silver">Танд идэвхтэй захиалга байна.</p>
               <a href={`/orders/${mine[0].ref}`} className="mt-4 inline-block rounded-full bg-electric px-6 py-3 font-display text-xs font-semibold tracking-[0.2em] text-white">
@@ -48,7 +62,7 @@ export default async function BuyPage({ searchParams }: { searchParams: Promise<
           ) : !state.open ? (
             <p className="text-center text-sm text-silver">Энэ ангиллын тасалбар одоогоор зарагдахгүй байна.</p>
           ) : (
-            <BuyForm tier={tier.id} methods={{ qpay: qpayEnabled(), bank: bankEnabled() }} />
+            <BuyForm tier={tier.id} methods={methods} />
           )}
         </div>
       </AuthShell>

@@ -88,3 +88,12 @@ export function badOrigin(req: NextRequest): NextResponse | null {
 }
 
 export const jsonError = (error: string, status: number) => NextResponse.json({ error }, { status });
+
+/** Өгөгдлийн сан холбогдоогүй үед ойлгомжтой алдаа (production) */
+export function dbMissing(): NextResponse | null {
+  if (process.env.NODE_ENV !== "production" || process.env.DATABASE_URL || process.env.POSTGRES_URL) return null;
+  return NextResponse.json(
+    { error: "Өгөгдлийн сан холбогдоогүй байна. Зохион байгуулагч Vercel → Storage → Neon холбоно уу." },
+    { status: 503 },
+  );
+}

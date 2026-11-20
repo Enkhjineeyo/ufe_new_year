@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { COOLDOWN_COOKIE, getBaseUrl, maskEmail, normalizeAllowedEmail, safeNext, signToken } from "@/lib/auth";
 import { sendLoginLink } from "@/lib/mailer";
+import { LOGIN_RID_COOKIE, createLoginRequest, newRid } from "@/lib/login-requests";
 import { siteConfig } from "@/site.config";
 
 export const runtime = "nodejs";
@@ -42,7 +43,14 @@ export async function POST(req: NextRequest) {
   }
 
   try {
+    const rid = newRid();
+    try {
+      await createLoginRequest(rid, email);
+    } catch (e) {
+      console.error("login request store failed (same-browser login still works)", e);
+    }
     const token = signToken({
+      rid,
       email,
       purpose: "login",
       exp: Date.now() + siteConfig.auth.linkTtlMinutes * 60_000,
@@ -51,6 +59,13 @@ export async function POST(req: NextRequest) {
     const link = `${getBaseUrl(req.nextUrl.origin)}/api/auth/verify?token=${encodeURIComponent(token)}`;
     const { devLink } = await sendLoginLink(email, link);
     const res = NextResponse.json({ ok: true, sentTo: maskEmail(email), devLink });
+    res.cookies.set(LOGIN_RID_COOKIE, rid, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      path: "/",
+      maxAge: 20 * 60,
+    });
     res.cookies.set(COOLDOWN_COOKIE, "1", { httpOnly: true, sameSite: "lax", path: "/", maxAge: 60 });
     return res;
   } catch (err) {
