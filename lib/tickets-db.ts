@@ -32,6 +32,8 @@ export interface Order {
   /** Тасалбарын тоо (1 + найзын тоо) */
   quantity: number;
   guests: Guest[];
+  /** VIP ширээний дугаар (бусад ангилалд null) */
+  tableNo: number | null;
   amount: number;
   method: PayMethod;
   status: OrderStatus;
@@ -61,6 +63,7 @@ export interface NewOrder {
   email: string;
   tier: string;
   guests: Guest[];
+  tableNo: number | null;
   amount: number;
   method: PayMethod;
   expiresAt: Date;
@@ -70,13 +73,15 @@ export interface NewOrder {
 export interface OrderLimits {
   tierQuantity: number;
   maxOrdersPerEmail: number;
+  /** Ширээ сонгосон бол нэг ширээний суудлын тоо */
+  seatsPerTable?: number;
 }
 
 /**
  * "soldout" — ангилалд хүрэлцэх тасалбар үлдээгүй, "limit" — оюутанд идэвхтэй захиалга байна.
  * Шалгалт ба бичилт нэг transaction дотор хийгдэх тул зэрэг ирсэн хүсэлтүүд хэтрүүлж зарахгүй.
  */
-export type CreateResult = Order | "soldout" | "limit";
+export type CreateResult = Order | "soldout" | "limit" | "tablefull";
 
 interface Store {
   create(o: NewOrder, limits: OrderLimits): Promise<CreateResult>;
@@ -94,6 +99,8 @@ interface Store {
   countActive(tier: string): Promise<number>;
   /** Оюутны идэвхтэй захиалгын тоо */
   countActiveForEmail(email: string): Promise<number>;
+  /** Ширээ бүрт эзлэгдсэн (зарагдсан + хүлээгдэж буй) суудлын тоо */
+  tableUsage(tier: string): Promise<Record<number, number>>;
 }
 
 const ALPH = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -136,6 +143,8 @@ function pgStore(url: string): Store {
       // Найзын тасалбарын өөрчлөлт: хуучин хүснэгтэд багана нэмнэ (хуучин захиалга = 1 тасалбар)
       await sql`ALTER TABLE tk_orders ADD COLUMN IF NOT EXISTS quantity INTEGER NOT NULL DEFAULT 1`;
       await sql`ALTER TABLE tk_orders ADD COLUMN IF NOT EXISTS guests JSONB NOT NULL DEFAULT '[]'::jsonb`;
+      // VIP ширээ сонголт
+      await sql`ALTER TABLE tk_orders ADD COLUMN IF NOT EXISTS table_no INTEGER`;
       await sql`CREATE INDEX IF NOT EXISTS tk_orders_email_idx ON tk_orders(email)`;
       await sql`CREATE INDEX IF NOT EXISTS tk_orders_tier_idx ON tk_orders(tier, status)`;
       await sql`CREATE TABLE IF NOT EXISTS tk_tickets (
@@ -177,6 +186,7 @@ function pgStore(url: string): Store {
       tier: String(r.tier),
       quantity: Number(r.quantity ?? 1),
       guests: (r.guests as Guest[]) ?? [],
+      tableNo: r.table_no == null ? null : Number(r.table_no),
       amount: Number(r.amount),
       method: r.method as PayMethod,
       status: r.status as OrderStatus,
@@ -215,18 +225,26 @@ function pgStore(url: string): Store {
       // Түгжээ авсны дараах INSERT бусад transaction-ий commit хийсэн мөрийг харж тоолно.
       const [, inserted] = await sql.transaction((tx) => [
         tx`SELECT pg_advisory_xact_lock(${ORDER_LOCK_KEY})`,
-        tx`INSERT INTO tk_orders (ref, email, tier, quantity, guests, amount, method, expires_at)
-          SELECT ${newRef()}, ${o.email}, ${o.tier}, ${quantity}, ${JSON.stringify(o.guests)}::jsonb,
+        tx`INSERT INTO tk_orders (ref, email, tier, quantity, guests, table_no, amount, method, expires_at)
+          SELECT ${newRef()}, ${o.email}, ${o.tier}, ${quantity}, ${JSON.stringify(o.guests)}::jsonb, ${o.tableNo},
                  ${o.amount}, ${o.method}, ${o.expiresAt.toISOString()}
           WHERE (SELECT COALESCE(SUM(quantity), 0) FROM tk_orders WHERE tier = ${o.tier}
                    AND (status = 'paid' OR (status = 'pending' AND expires_at > NOW()))) + ${quantity} <= ${limits.tierQuantity}
             AND (SELECT COUNT(*) FROM tk_orders WHERE email = ${o.email}
                    AND (status = 'paid' OR (status = 'pending' AND expires_at > NOW()))) < ${limits.maxOrdersPerEmail}
+            AND (${o.tableNo}::int IS NULL OR (SELECT COALESCE(SUM(quantity), 0) FROM tk_orders WHERE tier = ${o.tier}
+                   AND table_no = ${o.tableNo}::int
+                   AND (status = 'paid' OR (status = 'pending' AND expires_at > NOW()))) + ${quantity} <= ${limits.seatsPerTable ?? 0})
           RETURNING *`,
       ]);
       if (inserted[0]) return row(inserted[0] as Record<string, unknown>);
       // Аль хязгаарт хүрснийг тодорхойлж хэрэглэгчид зөв мессеж өгнө
-      return (await this.countActiveForEmail(o.email)) >= limits.maxOrdersPerEmail ? "limit" : "soldout";
+      if ((await this.countActiveForEmail(o.email)) >= limits.maxOrdersPerEmail) return "limit";
+      if (o.tableNo != null && limits.seatsPerTable) {
+        const used = (await this.tableUsage(o.tier))[o.tableNo] ?? 0;
+        if (used + quantity > limits.seatsPerTable) return "tablefull";
+      }
+      return "soldout";
     },
     async setQpay(ref, q) {
       await ensure();
@@ -308,6 +326,14 @@ function pgStore(url: string): Store {
       const r = await sql.query(`SELECT COUNT(*) AS n FROM tk_orders WHERE email = $1 AND ${ACTIVE}`, [email]);
       return Number(r[0]?.n ?? 0);
     },
+    async tableUsage(tier) {
+      await ensure();
+      const r = await sql.query(
+        `SELECT table_no, COALESCE(SUM(quantity), 0) AS n FROM tk_orders WHERE tier = $1 AND table_no IS NOT NULL AND ${ACTIVE} GROUP BY table_no`,
+        [tier],
+      );
+      return Object.fromEntries(r.map((x) => [Number(x.table_no), Number(x.n)]));
+    },
   };
 }
 
@@ -325,8 +351,12 @@ function memStore(): Store {
       if (db.filter((x) => x.email === o.email && active(x)).length >= limits.maxOrdersPerEmail) return "limit";
       const used = db.filter((x) => x.tier === o.tier && active(x)).reduce((s, x) => s + x.quantity, 0);
       if (used + quantity > limits.tierQuantity) return "soldout";
+      if (o.tableNo != null && limits.seatsPerTable) {
+        const atTable = db.filter((x) => x.tier === o.tier && x.tableNo === o.tableNo && active(x)).reduce((s, x) => s + x.quantity, 0);
+        if (atTable + quantity > limits.seatsPerTable) return "tablefull";
+      }
       const order: Order = {
-        ref: newRef(), email: o.email, tier: o.tier, quantity, guests: o.guests, amount: o.amount, method: o.method,
+        ref: newRef(), email: o.email, tier: o.tier, quantity, guests: o.guests, tableNo: o.tableNo, amount: o.amount, method: o.method,
         status: "pending", expiresAt: o.expiresAt.toISOString(), createdAt: new Date().toISOString(), paidAt: null,
         ticketCode: null, checkedInAt: null, confirmedBy: null, qpayInvoiceId: null, qpayQrImage: null,
         qpayShortUrl: null, qpayUrls: null, tickets: [],
@@ -399,6 +429,11 @@ function memStore(): Store {
     },
     async countActiveForEmail(email) {
       return db.filter((o) => o.email === email && active(o)).length;
+    },
+    async tableUsage(tier) {
+      const out: Record<number, number> = {};
+      for (const o of db) if (o.tier === tier && o.tableNo != null && active(o)) out[o.tableNo] = (out[o.tableNo] ?? 0) + o.quantity;
+      return out;
     },
   };
 }

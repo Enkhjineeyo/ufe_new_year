@@ -6,7 +6,7 @@ import { api } from "@/lib/client-utils";
 import { formatMNT } from "@/data/tickets";
 
 type Row = {
-  ref: string; email: string; tier: string; quantity: number; guests: { name: string; phone: string }[];
+  ref: string; email: string; tier: string; quantity: number; guests: { name: string; phone: string }[]; tableNo?: number | null;
   tickets: { code: string; holder: string | null; checkedInAt: string | null }[]; amount: number; method: "qpay" | "bank"; status: string;
   createdAt: string; paidAt: string | null; ticketCode: string | null; checkedInAt: string | null; confirmedBy: string | null;
 };
@@ -134,7 +134,7 @@ export default function AdminDashboard() {
                       <span key={g.phone + g.name} className="block text-xs text-amber-200/80">+ {g.name} · {g.phone}</span>
                     ))}
                   </td>
-                  <td className="p-3 uppercase">{r.tier}{r.quantity > 1 && <span className="ml-1 normal-case text-white">×{r.quantity}</span>}</td>
+                  <td className="p-3 uppercase">{r.tier}{r.tableNo ? <span className="ml-1 normal-case text-white">#{r.tableNo}</span> : null}{r.quantity > 1 && <span className="ml-1 normal-case text-white">×{r.quantity}</span>}</td>
                   <td className="p-3">{formatMNT(r.amount)}</td>
                   <td className="p-3">{r.method === "qpay" ? "QPay" : "Данс"}</td>
                   <td className="p-3">

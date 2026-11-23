@@ -34,7 +34,7 @@ export async function GET(req: NextRequest) {
       stats,
       orders: orders.map((o) => ({
         ref: o.ref, email: o.email, tier: o.tier, quantity: o.quantity, amount: o.amount,
-        guests: o.guests,
+        guests: o.guests, tableNo: o.tableNo,
         tickets: o.tickets.map((x) => ({ code: x.code, holder: x.isGuest ? x.holderName : o.email, checkedInAt: x.checkedInAt })), method: o.method, status: o.status,
         createdAt: o.createdAt, paidAt: o.paidAt, ticketCode: o.ticketCode, checkedInAt: o.checkedInAt, confirmedBy: o.confirmedBy,
       })),

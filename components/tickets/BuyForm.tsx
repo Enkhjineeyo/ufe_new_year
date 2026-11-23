@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Landmark, Loader2, Minus, Plus, QrCode, UserPlus } from "lucide-react";
+import { Armchair, Landmark, Loader2, Minus, Plus, QrCode, UserPlus } from "lucide-react";
 import { api } from "@/lib/client-utils";
 import { formatMNT } from "@/data/tickets";
 
@@ -12,6 +12,8 @@ interface Props {
   /** Энэ ангилалд авч болох найзын дээд тоо (тохиргоо ба үлдэгдлээс хамаарна) */
   maxGuests: number;
   methods: { qpay: boolean; bank: boolean };
+  /** VIP бол ширээ бүрийн үлдсэн суудал, бусад ангилалд null */
+  tables?: { no: number; remaining: number }[] | null;
 }
 
 type GuestInput = { name: string; phone: string };
@@ -19,8 +21,12 @@ type GuestInput = { name: string; phone: string };
 const inputCls =
   "w-full rounded-xl border border-white/10 bg-night px-4 py-3 text-sm text-white placeholder:text-silver/40 focus:border-electric focus:outline-none";
 
-export default function BuyForm({ tier, price, maxGuests, methods }: Props) {
+export default function BuyForm({ tier, price, maxGuests: tierMaxGuests, methods, tables }: Props) {
   const router = useRouter();
+  const [table, setTable] = useState<number | null>(null);
+  const tableLeft = tables && table != null ? (tables.find((t) => t.no === table)?.remaining ?? 0) : null;
+  // Ширээ сонгосон бол тухайн ширээний үлдсэн суудлаас хэтрэхгүй
+  const maxGuests = tableLeft != null ? Math.max(0, Math.min(tierMaxGuests, tableLeft - 1)) : tierMaxGuests;
   const [count, setCount] = useState(1);
   const [guests, setGuests] = useState<GuestInput[]>([]);
   const [method, setMethod] = useState<"qpay" | "bank" | null>(methods.qpay ? "qpay" : methods.bank ? "bank" : null);
@@ -37,10 +43,24 @@ export default function BuyForm({ tier, price, maxGuests, methods }: Props) {
   const setGuest = (i: number, field: keyof GuestInput, value: string) =>
     setGuests((g) => g.map((x, j) => (j === i ? { ...x, [field]: value } : x)));
 
+  function pickTable(no: number) {
+    setTable(no);
+    const left = tables?.find((t) => t.no === no)?.remaining ?? 0;
+    if (count > left) changeCountTo(Math.max(1, left));
+  }
+  function changeCountTo(n: number) {
+    setCount(n);
+    setGuests((g) => Array.from({ length: n - 1 }, (_, i) => g[i] ?? { name: "", phone: "" }));
+  }
+
   const guestsComplete = guests.every((g) => g.name.trim().length >= 2 && g.phone.replace(/\D/g, "").length >= 8);
 
   async function submit() {
     if (!method) return;
+    if (tables && table == null) {
+      setError("VIP ширээгээ сонгоно уу.");
+      return;
+    }
     if (!guestsComplete) {
       setError("Найз бүрийн овог нэр, утасны дугаарыг бөглөнө үү.");
       return;
@@ -50,7 +70,7 @@ export default function BuyForm({ tier, price, maxGuests, methods }: Props) {
     try {
       const { order } = await api<{ order: { ref: string } }>("/api/tickets/order", {
         method: "POST",
-        body: JSON.stringify({ tier, method, guests }),
+        body: JSON.stringify({ tier, method, guests, table }),
       });
       router.push(`/orders/${order.ref}`);
     } catch (e) {
@@ -66,6 +86,40 @@ export default function BuyForm({ tier, price, maxGuests, methods }: Props) {
 
   return (
     <div>
+      {tables && (
+        <fieldset className="mb-6">
+          <legend className="flex items-center gap-2 text-[0.65rem] font-semibold tracking-[0.3em] text-silver/70">
+            <Armchair className="h-3.5 w-3.5" aria-hidden="true" /> VIP ШИРЭЭ СОНГОХ
+          </legend>
+          <p className="mt-2 text-xs leading-relaxed text-silver/70">
+            2-р давхрын VIP бүс. Таны болон найзуудын тань суудал нэг ширээнд байна.{" "}
+            <a href="/#details" className="underline hover:text-white">Байршлын зураг</a>
+          </p>
+          <div className="mt-3 grid grid-cols-4 gap-2 sm:grid-cols-7" role="radiogroup" aria-label="VIP ширээ">
+            {tables.map((t) => {
+              const full = t.remaining <= 0;
+              const on = table === t.no;
+              return (
+                <button
+                  key={t.no}
+                  type="button"
+                  role="radio"
+                  aria-checked={on}
+                  disabled={full}
+                  onClick={() => pickTable(t.no)}
+                  className={`rounded-xl border px-1 py-2.5 text-center transition-colors disabled:cursor-not-allowed disabled:opacity-35 ${
+                    on ? "border-electric bg-electric/15" : "border-white/10 hover:border-white/30"
+                  }`}
+                >
+                  <span className="block font-display text-base font-bold text-white">{t.no}</span>
+                  <span className="block text-[0.6rem] text-silver/70">{full ? "Дүүрсэн" : `${t.remaining} суудал`}</span>
+                </button>
+              );
+            })}
+          </div>
+        </fieldset>
+      )}
+
       <p className="text-[0.65rem] font-semibold tracking-[0.3em] text-silver/70">ТАСАЛБАРЫН ТОО</p>
       <div className="mt-3 flex items-center justify-between gap-4 rounded-2xl border border-white/10 p-4">
         <div>
@@ -73,7 +127,9 @@ export default function BuyForm({ tier, price, maxGuests, methods }: Props) {
             {count === 1 ? "Зөвхөн өөртөө" : `Өөртөө + ${count - 1} найздаа`}
           </p>
           <p className="mt-1 text-xs text-silver/70">
-            {maxGuests > 0 ? `СЭЗИС-ийн оюутан ${maxGuests} хүртэлх найзтайгаа ирж болно.` : "Энэ ангилалд найзын тасалбар үлдээгүй."}
+            {maxGuests > 0
+              ? `СЭЗИС-ийн оюутан ${maxGuests} хүртэлх найзтайгаа ирж болно.${tables ? " VIP найз мөн 21+ байх ёстой." : ""}`
+              : tableLeft != null ? "Энэ ширээнд найзын суудал үлдээгүй." : "Энэ ангилалд найзын тасалбар үлдээгүй."}
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -179,7 +235,7 @@ export default function BuyForm({ tier, price, maxGuests, methods }: Props) {
       {error && <p className="mt-4 text-sm text-[#ff8a9b]" role="alert">{error}</p>}
       <button
         onClick={submit}
-        disabled={!method || busy}
+        disabled={!method || busy || (tables != null && table == null)}
         className="mt-6 flex w-full items-center justify-center gap-2 rounded-full bg-electric py-4 font-display text-xs font-semibold tracking-[0.2em] text-white shadow-[0_0_40px_-8px_rgba(83,109,255,0.9)] transition hover:brightness-110 disabled:opacity-40"
       >
         {busy && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />}

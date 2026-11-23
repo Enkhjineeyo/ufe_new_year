@@ -5,8 +5,8 @@ import Navbar from "@/components/Navbar";
 import AuthShell from "@/components/AuthShell";
 import BuyForm from "@/components/tickets/BuyForm";
 import { getSessionEmail } from "@/lib/session";
-import { getTier, formatMNT, ticketConfig } from "@/data/tickets";
-import { bankEnabled, tierState } from "@/lib/tickets";
+import { getTier, formatMNT, ticketConfig, vipEligible, vipIneligibleMessage } from "@/data/tickets";
+import { bankEnabled, tierState, vipTables } from "@/lib/tickets";
 import { qpayEnabled } from "@/lib/qpay";
 import { ticketStore } from "@/lib/tickets-db";
 
@@ -23,9 +23,13 @@ export default async function BuyPage({ searchParams }: { searchParams: Promise<
   let setupError: string | null = null;
   let mine: Awaited<ReturnType<ReturnType<typeof ticketStore>["listByEmail"]>> = [];
   let state: Awaited<ReturnType<typeof tierState>> = { open: false, remaining: 0 };
+  let tables: Awaited<ReturnType<typeof vipTables>> | null = null;
+  const isVip = tier.id === "vip";
+  const ageBlocked = isVip && !vipEligible(email);
   try {
     mine = (await ticketStore().listByEmail(email)).filter((o) => o.status === "paid" || o.status === "pending");
     state = await tierState(tier);
+    if (isVip) tables = await vipTables();
   } catch (e) {
     console.error(e);
     setupError = "Тасалбарын систем хараахан бэлэн болоогүй байна (өгөгдлийн сан холбогдоогүй). Удахгүй дахин оролдоно уу.";
@@ -52,6 +56,13 @@ export default async function BuyPage({ searchParams }: { searchParams: Promise<
         <div className="glass mt-8 rounded-3xl p-6 sm:p-8">
           {setupError ? (
             <p className="text-center text-sm leading-relaxed text-amber-200">{setupError}</p>
+          ) : ageBlocked ? (
+            <div className="text-center">
+              <p className="text-sm leading-relaxed text-amber-200">{vipIneligibleMessage()}</p>
+              <a href="/tickets/buy?tier=regular" className="mt-4 inline-block rounded-full bg-electric px-6 py-3 font-display text-xs font-semibold tracking-[0.2em] text-white">
+                REGULAR ТАСАЛБАР АВАХ
+              </a>
+            </div>
           ) : mine.length >= ticketConfig.maxOrdersPerStudent ? (
             <div className="text-center">
               <p className="text-sm text-silver">Танд идэвхтэй захиалга байна.</p>
@@ -62,7 +73,13 @@ export default async function BuyPage({ searchParams }: { searchParams: Promise<
           ) : !state.open ? (
             <p className="text-center text-sm text-silver">Энэ ангиллын тасалбар одоогоор зарагдахгүй байна.</p>
           ) : (
-            <BuyForm tier={tier.id} price={tier.price} maxGuests={Math.max(0, Math.min(ticketConfig.maxGuests, state.remaining - 1))} methods={methods} />
+            <BuyForm
+              tier={tier.id}
+              price={tier.price}
+              maxGuests={Math.max(0, Math.min(ticketConfig.maxGuests, state.remaining - 1))}
+              methods={methods}
+              tables={tables}
+            />
           )}
         </div>
       </AuthShell>

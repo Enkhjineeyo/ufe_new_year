@@ -7,7 +7,7 @@ import { getSessionEmail } from "@/lib/session";
 import { ticketStore } from "@/lib/tickets-db";
 import { isAdmin } from "@/lib/tickets";
 import { displayName } from "@/lib/lostfound";
-import { getTier } from "@/data/tickets";
+import { getTier, tableLabel } from "@/data/tickets";
 
 export const metadata: Metadata = { title: "Тасалбар шалгах", robots: { index: false } };
 export const dynamic = "force-dynamic";
@@ -36,7 +36,7 @@ export default async function TicketVerifyPage({ params }: { params: Promise<{ c
           {valid && order && ticket && (
             <>
               <p className="mt-3 inline-block rounded-full bg-electric px-4 py-1.5 font-display text-xs font-bold tracking-[0.2em] text-white">
-                {getTier(order.tier)?.name ?? order.tier}
+                {getTier(order.tier)?.name ?? order.tier}{order.tableNo ? ` · ${tableLabel(order.tableNo)}` : ""}
               </p>
               {ticket.isGuest ? (
                 <div className="mt-3 text-sm text-silver">

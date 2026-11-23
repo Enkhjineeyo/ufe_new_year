@@ -1,5 +1,5 @@
 import "server-only";
-import { ticketConfig, getTier, validateGuests, type TicketTier } from "@/data/tickets";
+import { ticketConfig, getTier, validateGuests, validateTable, vipEligible, vipIneligibleMessage, tableLabel, type TicketTier } from "@/data/tickets";
 import { ticketStore, type Order, type PayMethod, type Ticket } from "./tickets-db";
 import { createInvoice, isInvoicePaid, qpayEnabled } from "./qpay";
 import { displayName } from "./lostfound";
@@ -27,6 +27,12 @@ export async function tierState(t: TicketTier): Promise<TierState> {
   return { open: true, remaining };
 }
 
+/** VIP ширээ бүрийн үлдсэн суудал */
+export async function vipTables(): Promise<{ no: number; remaining: number }[]> {
+  const used = await ticketStore().tableUsage("vip");
+  return ticketConfig.vip.tables.map((no) => ({ no, remaining: Math.max(0, ticketConfig.vip.seatsPerTable - (used[no] ?? 0)) }));
+}
+
 export class TicketError extends Error {
   constructor(message: string, public status = 400) {
     super(message);
@@ -42,9 +48,13 @@ export async function placeOrder(
   method: PayMethod,
   guestsInput: unknown,
   baseUrl: string,
+  tableInput?: unknown,
 ): Promise<Order> {
   const tier = getTier(tierId);
   if (!tier) throw new TicketError("Тасалбарын төрөл олдсонгүй.");
+  if (tier.id === "vip" && !vipEligible(email)) throw new TicketError(vipIneligibleMessage(), 403);
+  const tableNo = validateTable(tier.id, tableInput);
+  if (typeof tableNo === "string") throw new TicketError(tableNo);
   if (method === "qpay" && !qpayEnabled()) throw new TicketError("QPay төлбөр одоогоор идэвхгүй байна.");
   if (method === "bank" && !bankEnabled()) throw new TicketError("Дансаар төлөх боломж одоогоор идэвхгүй байна.");
   const guests = validateGuests(guestsInput);
@@ -63,17 +73,24 @@ export async function placeOrder(
   if (state.remaining < quantity) {
     throw new TicketError(`Энэ ангилалд ${state.remaining} тасалбар л үлдсэн байна. Найзынхаа тоог багасгана уу.`, 409);
   }
+  if (tableNo != null) {
+    const left = (await vipTables()).find((t) => t.no === tableNo)?.remaining ?? 0;
+    if (left < quantity) {
+      throw new TicketError(left > 0 ? `${tableNo}-р ширээнд ${left} суудал л үлдсэн байна.` : `${tableLabel(tableNo)} дүүрсэн байна. Өөр ширээ сонгоно уу.`, 409);
+    }
+  }
 
   const expiresAt = new Date(
     Date.now() + (method === "qpay" ? ticketConfig.qpayExpiryMinutes * 60_000 : ticketConfig.bankExpiryHours * 3_600_000),
   );
   const created = await store.create(
-    { email, tier: tier.id, guests, amount: tier.price * quantity, method, expiresAt },
-    { tierQuantity: tier.quantity, maxOrdersPerEmail: ticketConfig.maxOrdersPerStudent },
+    { email, tier: tier.id, guests, tableNo, amount: tier.price * quantity, method, expiresAt },
+    { tierQuantity: tier.quantity, maxOrdersPerEmail: ticketConfig.maxOrdersPerStudent, seatsPerTable: ticketConfig.vip.seatsPerTable },
   );
   // Дээрх шалгалтын дараа өөр хүн сүүлийн тасалбаруудыг авсан байж болно
   if (created === "soldout") throw new TicketError("Энэ ангилалд хүрэлцэх тасалбар үлдээгүй байна.", 409);
   if (created === "limit") throw new TicketError(limitMessage(), 409);
+  if (created === "tablefull") throw new TicketError(`${tableNo}-р ширээнд хүрэлцэх суудал үлдээгүй байна. Өөр ширээ сонгоно уу.`, 409);
   const order = created;
 
   if (method === "qpay") {
@@ -81,7 +98,7 @@ export async function placeOrder(
       const inv = await createInvoice({
         ref: order.ref,
         amount: order.amount,
-        description: `СЭЗИС NEW YEAR 2027 — ${tier.name} x${order.quantity} (${order.ref})`,
+        description: `СЭЗИС NEW YEAR 2027 — ${tier.name}${tableNo ? ` ${tableNo}-р ширээ` : ""} x${order.quantity} (${order.ref})`,
         callbackUrl: `${baseUrl}/api/tickets/qpay/callback?ref=${encodeURIComponent(order.ref)}`,
       });
       await store.setQpay(order.ref, inv);
@@ -129,7 +146,8 @@ export function orderDTO(o: Order) {
   return {
     ref: o.ref,
     tier: o.tier,
-    tierName: tier?.name ?? o.tier,
+    tierName: (tier?.name ?? o.tier) + (o.tableNo ? ` · ${tableLabel(o.tableNo)}` : ""),
+    tableNo: o.tableNo,
     quantity: o.quantity,
     guests: o.guests.map((g) => g.name),
     amount: o.amount,

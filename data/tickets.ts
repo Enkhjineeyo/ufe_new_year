@@ -1,6 +1,6 @@
 /**
  * ТАСАЛБАРЫН ТОХИРГОО — үнэ, тоо ширхэг, давуу тал, дансны мэдээллийг ЗӨВХӨН энд засна.
- * Үнэ: Early Bird 70,000₮ · Regular 80,000₮ · VIP 200,000₮ (240ш). Early Bird/Regular-ийн тоо, Early Bird дуусах огноог шалгаарай.
+ * Үнэ: Early Bird 70,000₮ · Regular 80,000₮ · VIP 250,000₮ (14 ширээ × 10 суудал, зөвхөн 21+). Early Bird/Regular-ийн тоо, Early Bird дуусах огноог шалгаарай.
  */
 export type TierId = "early" | "regular" | "vip";
 
@@ -49,11 +49,23 @@ export const ticketConfig = {
     {
       id: "vip",
       name: "VIP",
-      price: 200000,
-      quantity: 240,
-      perks: ["2-р давхрын VIP бүсэд суудал", "Үдшийн бүх тоглолт, DJ set", "Finger foods", "Photobooth"],
+      price: 250000,
+      /** VIP-ийн нийт тоо = ширээний тоо × суудал (доорх vip тохиргооноос) */
+      quantity: 14 * 10,
+      perks: ["Зөвхөн 21+ (b23 ба түүнээс өмнөх код)", "2-р давхрын VIP ширээгээ өөрөө сонгоно", "Үдшийн бүх тоглолт, DJ set", "Finger foods", "Photobooth"],
     },
   ] satisfies TicketTier[],
+
+  /**
+   * VIP — ширээ сонгох ба насны хязгаар.
+   * Ширээний тоо/суудлыг өөрчилбөл дээрх VIP quantity-г (tables.length × seatsPerTable) мөн тааруулна.
+   */
+  vip: {
+    tables: Array.from({ length: 14 }, (_, i) => i + 1),
+    seatsPerTable: 10,
+    /** Оюутны кодын элссэн он (b23 → 23). Үүнээс хойш элссэн (b24, b25, b26...) оюутан VIP авахгүй */
+    maxEntryYear: 23,
+  },
 
   /**
    * ДАНСААР ТӨЛӨХ — дансны дугаар хоосон бол "Дансаар" сонголт харагдахгүй.
@@ -90,6 +102,31 @@ export function validateGuests(input: unknown): Guest[] | string {
   }
   return out;
 }
+
+/** Майлаас оюутны элссэн оныг гаргана: b23xxxxx@ufe.edu.mn → 23. Олдохгүй бол null */
+export function entryYear(email: string): number | null {
+  const m = /^b(\d{2})/i.exec(email.trim());
+  return m ? Number(m[1]) : null;
+}
+
+/** VIP авах эрхтэй эсэх (21+): b23 ба түүнээс өмнө элссэн оюутан */
+export function vipEligible(email: string): boolean {
+  const y = entryYear(email);
+  return y !== null && y <= ticketConfig.vip.maxEntryYear;
+}
+
+export const vipIneligibleMessage = () =>
+  `VIP тасалбарыг зөвхөн 21 ба түүнээс дээш насныхан авна: оюутны код b${ticketConfig.vip.maxEntryYear} болон түүнээс өмнөх оюутан авах боломжтой.`;
+
+/** Ширээний дугаарыг шалгана. VIP биш бол null */
+export function validateTable(tierId: string, input: unknown): number | null | string {
+  if (tierId !== "vip") return null;
+  const n = Number(input);
+  if (!Number.isInteger(n) || !ticketConfig.vip.tables.includes(n)) return "VIP ширээгээ сонгоно уу.";
+  return n;
+}
+
+export const tableLabel = (n: number | null | undefined) => (n ? `${n}-р ширээ` : "");
 
 export const getTier =(id: string) => ticketConfig.tiers.find((t) => t.id === id) as TicketTier | undefined;
 

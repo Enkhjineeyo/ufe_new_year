@@ -91,7 +91,7 @@ export default function TicketsSection() {
           })}
         </ul>
         <p className="mt-8 text-center text-xs text-silver/60">
-          СЭЗИС-ийн оюутан @ufe.edu.mn майлаараа нэвтэрч, өөртөө болон {ticketConfig.maxGuests} хүртэлх найздаа тасалбар авна
+          СЭЗИС-ийн оюутан @ufe.edu.mn майлаараа нэвтэрч, өөртөө болон {ticketConfig.maxGuests} хүртэлх найздаа тасалбар авна · VIP зөвхөн 21+ (b{ticketConfig.vip.maxEntryYear} ба түүнээс өмнөх код)
         </p>
       </div>
     </section>
